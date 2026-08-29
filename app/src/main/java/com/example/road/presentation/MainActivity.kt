@@ -13,7 +13,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
-import com.example.road.presentation.ui.theme.RoadTheme
+import com.example.road.ui.theme.RoadTheme
 import dagger.hilt.android.AndroidEntryPoint
 
 @AndroidEntryPoint

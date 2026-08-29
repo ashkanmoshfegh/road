@@ -1,6 +1,6 @@
 package com.example.road.domain.routing
 
-import com.example.road.data.local.repository.TrafficRepository
+import com.example.road.data.m.local.repository.TrafficRepository
 import javax.inject.Inject
 import javax.inject.Singleton
 

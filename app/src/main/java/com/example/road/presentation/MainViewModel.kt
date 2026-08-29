@@ -3,7 +3,7 @@ package com.example.road.presentation
 import android.location.Location
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.example.road.data.model.Position
+import com.example.road.data.m.model.Position
 import com.example.road.domain.resilience.ResilienceManager
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.StateFlow
