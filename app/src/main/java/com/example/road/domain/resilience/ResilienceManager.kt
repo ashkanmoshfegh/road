@@ -5,8 +5,8 @@ import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
 import android.location.Location
-import com.example.road.data.model.Position
-import com.example.road.data.local.repository.GraphRepository
+import com.example.road.data.m.model.Position
+import com.example.road.data.m.local.repository.GraphRepository
 import com.example.road.domain.routing.RouteCalculator
 import com.example.road.domain.routing.TrafficPredictor
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -35,15 +35,16 @@ class ResilienceManager @Inject constructor(
     private var routeCalculator: RouteCalculator? = null
 
     private val sensorFusion = SensorFusion()
-    private var lastSensorTime = 0L
+
+    // store latest sensor values
+    private var latestAccel = FloatArray(3)
+    private var latestGyro = FloatArray(3)
+    private var hasAccel = false
+    private var hasGyro = false
 
     suspend fun initialize() {
         val graph = graphRepository.loadGraph()
-        // Extract nodes and edges from GraphHopper (simplified)
-        // In production you'd load from Room or a JSON file.
-        // For now, we create a dummy list – you must replace this with actual graph loading.
-        val nodes = emptyList<com.example.road.data.model.Node>()
-        val edges = emptyList<com.example.road.data.model.Edge>()
+        val (nodes, edges) = graphRepository.getNodesAndEdges()
         mapMatcher = MapMatcher(edges, nodes)
         routeCalculator = RouteCalculator(graph)
     }
@@ -68,66 +69,39 @@ class ResilienceManager @Inject constructor(
 
     override fun onSensorChanged(event: SensorEvent?) {
         event ?: return
-
-        if (isGpsValid) {
-            // GPS is valid, no need to process sensors for position.
-            // But we still update the fusion's reset state silently if needed.
-            return
+        when (event.sensor.type) {
+            Sensor.TYPE_ACCELEROMETER -> {
+                latestAccel = event.values.clone()
+                hasAccel = true
+            }
+            Sensor.TYPE_GYROSCOPE -> {
+                latestGyro = event.values.clone()
+                hasGyro = true
+            }
         }
 
-        val currentTime = System.currentTimeMillis()
-        if (lastSensorTime == 0L) lastSensorTime = currentTime
-
-        val gyroZ = when (event.sensor.type) {
-            Sensor.TYPE_GYROSCOPE -> event.values[2]
-            else -> return
-        }
-
-        // For accelerometer, we need to capture the magnitude separately.
-        // Since this listener is registered for both, we rely on the main loop to get both.
-        // We'll use a separate accel magnitude stored in a variable.
-        // For simplicity, we compute it here if this event is accelerometer.
-        // However, since the callback is per sensor, we need to handle both.
-        // We'll register separately or compute magnitude if this is accel.
-        // EASY FIX: we only process sensors in a unified update.
-        // We'll implement a combined approach:
-        // The onSensorChanged fires for each sensor.
-        // We'll store the latest gyro and accel and process them in a separate loop.
-        // For production, use a SensorEventProvider pattern.
-        // For this code, we'll assume gyro event.
-        if (event.sensor.type == Sensor.TYPE_GYROSCOPE) {
-            val accelMag = 9.81f // dummy fallback. In real code, get from accelerometer event.
-            // We'll improve this below.
+        // Process only when we have both sensors and GPS is invalid
+        if (!isGpsValid && hasAccel && hasGyro && lastGpsPosition != null) {
+            val gyroZ = latestGyro[2]
+            val accelMag = sqrt(latestAccel[0]*latestAccel[0] + latestAccel[1]*latestAccel[1] + latestAccel[2]*latestAccel[2])
+            val currentTime = System.currentTimeMillis()
             val displacement = sensorFusion.update(gyroZ, accelMag, currentTime)
             displacement?.let { (dx, dy) ->
-                if (lastGpsPosition != null) {
-                    val newLat = lastGpsPosition!!.latitude + dx / 111320.0
-                    val newLon = lastGpsPosition!!.longitude + dy / (111320.0 * cos(lastGpsPosition!!.latitude))
-                    val newPos = Position(
-                        latitude = newLat,
-                        longitude = newLon,
-                        bearing = sensorFusion.getHeadingDegrees()
-                    )
-                    val matched = mapMatcher?.match(newPos) ?: newPos
-                    _currentPosition.value = matched
-                    _currentSource.value = "INS (Resilient)"
-                }
+                val newLat = lastGpsPosition!!.latitude + dx / 111320.0
+                val newLon = lastGpsPosition!!.longitude + dy / (111320.0 * kotlin.math.cos(lastGpsPosition!!.latitude))
+                val newPos = Position(
+                    latitude = newLat,
+                    longitude = newLon,
+                    bearing = sensorFusion.getHeadingDegrees()
+                )
+                val matched = mapMatcher?.match(newPos) ?: newPos
+                _currentPosition.value = matched
+                _currentSource.value = "INS (Resilient)"
             }
         }
     }
 
-    // To fix the sensor fusion properly, we need a combined sensor loop.
-    // I will provide a corrected version in the final answer, but the above is functional with a separate accel listener.
-    // For brevity, I'll add the combined listener logic here.
-
-    private var lastAccelMag = 0f
-    private var lastGyroZ = 0f
-
-    // This should be registered as the listener for both sensors.
-    // We'll filter in the callback.
-    override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {
-        // Not used
-    }
+    override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
 
     fun startSensors() {
         val accelerometer = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
@@ -144,7 +118,6 @@ class ResilienceManager @Inject constructor(
         val from = _currentPosition.value ?: return emptyList()
         val calculator = routeCalculator ?: return emptyList()
         val path = calculator.calculateRoute(from, destination)
-        // Convert GraphHopper points to our Position list
-        return path.map { Position(it.lat, it.lon) }
+        return path.map { Position(it.lat, it.lon, bearing = 0f) }
     }
 }

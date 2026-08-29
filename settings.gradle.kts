@@ -7,7 +7,7 @@ pluginManagement {
             url = uri("https://maven.aliyun.com/repository/gradle-plugin")
         }
         mavenCentral()
-        gradlePluginPortal()
+        gradlePluginPortal()   // ← REQUIRED for the compose compiler plugin
     }
 }
 

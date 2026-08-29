@@ -1,4 +1,4 @@
-package com.example.road.data.local.database
+package com.example.road.data.m.local.database
 
 import androidx.room.Entity
 import androidx.room.PrimaryKey

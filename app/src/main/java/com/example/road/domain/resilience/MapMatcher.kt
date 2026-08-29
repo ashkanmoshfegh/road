@@ -1,8 +1,8 @@
 package com.example.road.domain.resilience
 
-import com.example.road.data.model.Edge
-import com.example.road.data.model.Node
-import com.example.road.data.model.Position
+import com.example.road.data.m.model.Edge
+import com.example.road.data.m.model.Node
+import com.example.road.data.m.model.Position
 import kotlin.math.*
 
 class MapMatcher(private val edges: List<Edge>, private val nodes: List<Node>) {

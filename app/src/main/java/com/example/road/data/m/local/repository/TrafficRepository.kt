@@ -1,7 +1,7 @@
-package com.example.road.data.local.repository
+package com.example.road.data.m.local.repository
 
-import com.example.road.data.local.database.TrafficDao
-import com.example.road.data.local.database.TrafficEntity
+import com.example.road.data.m.local.database.TrafficDao
+import com.example.road.data.m.local.database.TrafficEntity
 import kotlinx.coroutines.flow.first
 import java.util.Calendar
 import javax.inject.Inject

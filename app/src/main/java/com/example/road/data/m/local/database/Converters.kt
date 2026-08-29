@@ -1,5 +1,6 @@
 package com.example.road.data.m.local.database
 
+import androidx.room.TypeConverter
 import java.util.Date
 
 class Converters {
