@@ -1,6 +1,7 @@
 package com.example.road.domain.resilience
 
 import android.hardware.Sensor
+import android.content.Context
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
@@ -15,9 +16,11 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlin.math.sqrt
 import javax.inject.Inject
 import javax.inject.Singleton
+import com.example.road.utils.GraphLoader
 
 @Singleton
 class ResilienceManager @Inject constructor(
+    private val context: Context,
     private val sensorManager: SensorManager,
     private val graphRepository: GraphRepository,
     private val trafficPredictor: TrafficPredictor
@@ -43,10 +46,13 @@ class ResilienceManager @Inject constructor(
     private var hasGyro = false
 
     suspend fun initialize() {
+        // Load GraphHopper for routing
         val graph = graphRepository.loadGraph()
-        val (nodes, edges) = graphRepository.getNodesAndEdges()
-        mapMatcher = MapMatcher(edges, nodes)
         routeCalculator = RouteCalculator(graph)
+
+        // Load nodes/edges from JSON for map matching
+        val (nodes, edges) = GraphLoader.loadGraph(context, "graph.json")
+        mapMatcher = MapMatcher(edges, nodes)
     }
 
     fun onGpsLocation(location: Location) {

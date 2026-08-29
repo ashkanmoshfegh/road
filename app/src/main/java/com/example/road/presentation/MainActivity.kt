@@ -6,13 +6,13 @@ import android.location.Location
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.viewModels
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
-import androidx.hilt.navigation.compose.hiltViewModel
 import com.example.road.ui.theme.RoadTheme
 import dagger.hilt.android.AndroidEntryPoint
 
@@ -21,12 +21,15 @@ class MainActivity : ComponentActivity() {
 
     private val locationPermission = Manifest.permission.ACCESS_FINE_LOCATION
 
+    // Declare the ViewModel at activity level – works outside composables
+    private val viewModel: MainViewModel by viewModels()
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
         setContent {
             RoadTheme {
-                val viewModel: MainViewModel = hiltViewModel()
+                // Use the activity’s ViewModel inside the composable
                 val position by viewModel.currentPosition.collectAsState()
                 val source by viewModel.currentSource.collectAsState()
 
@@ -60,7 +63,6 @@ class MainActivity : ComponentActivity() {
     private fun startGpsUpdates() {
         if (ContextCompat.checkSelfPermission(this, locationPermission) != PackageManager.PERMISSION_GRANTED) return
 
-        val viewModel: MainViewModel by lazy { hiltViewModel() }
         val locationManager = getSystemService(LOCATION_SERVICE) as android.location.LocationManager
 
         locationManager.requestLocationUpdates(
@@ -69,7 +71,7 @@ class MainActivity : ComponentActivity() {
             1f,
             object : android.location.LocationListener {
                 override fun onLocationChanged(location: Location) {
-                    viewModel.onGpsLocation(location)
+                    viewModel.onGpsLocation(location)  // Use the activity‑level ViewModel
                 }
                 override fun onProviderEnabled(provider: String) {}
                 override fun onProviderDisabled(provider: String) {}
@@ -78,9 +80,9 @@ class MainActivity : ComponentActivity() {
         )
     }
 
-    override fun onRequestPermissionsResult(
+     override fun onRequestPermissionsResult(
         requestCode: Int,
-        permissions: Array<out String>,
+        permissions: Array<String>,
         grantResults: IntArray
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
