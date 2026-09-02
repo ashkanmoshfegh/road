@@ -13,7 +13,7 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 @Singleton
-class GraphRepository @Inject constructor(private val context: Context) {
+class GraphRepository @Inject constructor(@ApplicationContext private val context: Context) {
 
     private var graphHopper: GraphHopper? = null
 

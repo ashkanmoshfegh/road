@@ -17,10 +17,11 @@ import kotlin.math.sqrt
 import javax.inject.Inject
 import javax.inject.Singleton
 import com.example.road.utils.GraphLoader
+import dagger.hilt.android.qualifiers.ApplicationContext
 
 @Singleton
 class ResilienceManager @Inject constructor(
-    private val context: Context,
+    @ApplicationContext private val context: Context,
     private val sensorManager: SensorManager,
     private val graphRepository: GraphRepository,
     private val trafficPredictor: TrafficPredictor

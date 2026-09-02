@@ -3,13 +3,12 @@ plugins {
     id("org.jetbrains.kotlin.android")                       // no version – inherited from root classpath
     id("org.jetbrains.kotlin.plugin.compose") version "2.0.21"  // ← explicit version!
     id("kotlin-kapt")
-    id("com.google.dagger.hilt.android") version "2.52"
+    id("com.google.dagger.hilt.android") version "2.55"
 }
 
 android {
     namespace = "com.example.road"
     compileSdk = 35
-
     defaultConfig {
         applicationId = "com.example.road"
         minSdk = 24
@@ -22,7 +21,13 @@ android {
         compose = true
     }
 
-    // Remove the entire composeOptions block – it's no longer needed
+    // Add this packaging block to resolve the duplicate file error
+    packaging {
+        resources {
+            merges += "META-INF/LICENSE.md"
+            merges += "META-INF/NOTICE.md"   // add this line
+        }
+    }
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11
@@ -30,6 +35,11 @@ android {
     }
     kotlinOptions {
         jvmTarget = "11"
+    }
+    configurations.all {
+        resolutionStrategy {
+            force("com.squareup:javapoet:1.13.0")
+        }
     }
 }
 
@@ -54,13 +64,13 @@ dependencies {
     implementation("org.slf4j:slf4j-simple:1.7.36")
 
     // Hilt
-    implementation("com.google.dagger:hilt-android:2.52")
-    kapt("com.google.dagger:hilt-compiler:2.52")
+    implementation("com.google.dagger:hilt-android:2.55")
+    kapt("com.google.dagger:hilt-compiler:2.55")
     implementation("androidx.hilt:hilt-navigation-compose:1.2.0")
 
     // Coroutines
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
-
+    kapt("com.squareup:javapoet:1.13.0")
     // Testing
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
