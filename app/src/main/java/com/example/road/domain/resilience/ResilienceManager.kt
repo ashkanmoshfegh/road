@@ -48,9 +48,9 @@ class ResilienceManager @Inject constructor(
 
     suspend fun initialize() {
         // Load GraphHopper for routing
-        val graph = graphRepository.loadGraph()
-        routeCalculator = RouteCalculator(graph)
-
+        // Load graph (optional, but we call it to ensure it's ready)
+        graphRepository.loadGraph()
+        routeCalculator = RouteCalculator(graphRepository)
         // Load nodes/edges from JSON for map matching
         val (nodes, edges) = GraphLoader.loadGraph(context, "graph.json")
         mapMatcher = MapMatcher(edges, nodes)
@@ -126,5 +126,15 @@ class ResilienceManager @Inject constructor(
         val calculator = routeCalculator ?: return emptyList()
         val path = calculator.calculateRoute(from, destination)
         return path.map { Position(it.lat, it.lon, bearing = 0f) }
+    }
+    fun simulateGpsLocation(lat: Double, lon: Double, bearing: Float) {
+        val loc = Location("simulated").apply {
+            this.latitude = lat
+            this.longitude = lon
+            this.bearing = bearing
+            this.accuracy = 5f
+            this.time = System.currentTimeMillis()
+        }
+        onGpsLocation(loc)
     }
 }

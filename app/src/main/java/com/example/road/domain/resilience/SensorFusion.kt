@@ -36,8 +36,8 @@ class SensorFusion {
         return position
     }
 
-    fun reset(initialHeading: Float = 0f) {
-        heading = initialHeading.toDouble()
+    fun reset(initialHeadingDegrees: Float = 0f) {
+        heading = Math.toRadians(initialHeadingDegrees.toDouble())
         position = Pair(0.0, 0.0)
         timestamp = 0L
     }

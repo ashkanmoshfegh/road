@@ -26,12 +26,14 @@ android {
         resources {
             merges += "META-INF/LICENSE.md"
             merges += "META-INF/NOTICE.md"   // add this line
+
         }
     }
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11
         targetCompatibility = JavaVersion.VERSION_11
+        isCoreLibraryDesugaringEnabled = true
     }
     kotlinOptions {
         jvmTarget = "11"
@@ -53,6 +55,8 @@ dependencies {
     implementation("androidx.compose.ui:ui-graphics")
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3")
+    implementation("org.osmdroid:osmdroid-android:6.1.18")
+
 
     // Room
     implementation("androidx.room:room-runtime:2.6.1")
@@ -60,9 +64,9 @@ dependencies {
     implementation("androidx.room:room-ktx:2.6.1")
 
     // GraphHopper
-    implementation("com.graphhopper:graphhopper-core:7.0")
+    implementation("com.graphhopper:graphhopper-core:6.0")
     implementation("org.slf4j:slf4j-simple:1.7.36")
-
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.0.4")
     // Hilt
     implementation("com.google.dagger:hilt-android:2.55")
     kapt("com.google.dagger:hilt-compiler:2.55")
@@ -71,10 +75,12 @@ dependencies {
     // Coroutines
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
     kapt("com.squareup:javapoet:1.13.0")
+    implementation("javax.annotation:javax.annotation-api:1.3.2")
     // Testing
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.6.1")
+    implementation("androidx.preference:preference-ktx:1.2.1")
 }
 
 kapt {

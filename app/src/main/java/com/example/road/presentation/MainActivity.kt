@@ -13,6 +13,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import com.example.road.presentation.MapScreen
 import com.example.road.ui.theme.RoadTheme
 import dagger.hilt.android.AndroidEntryPoint
 
@@ -41,6 +42,10 @@ class MainActivity : ComponentActivity() {
                     ) {
                         Text("Navigation Source: $source", style = MaterialTheme.typography.titleLarge)
                         Spacer(modifier = Modifier.height(16.dp))
+
+                        MapScreen(modifier = Modifier.weight(1f))
+                        Spacer(modifier = Modifier.height(16.dp))
+
                         position?.let { pos ->
                             Text("Lat: ${pos.latitude}")
                             Text("Lon: ${pos.longitude}")
@@ -80,7 +85,7 @@ class MainActivity : ComponentActivity() {
         )
     }
 
-     override fun onRequestPermissionsResult(
+    override fun onRequestPermissionsResult(
         requestCode: Int,
         permissions: Array<String>,
         grantResults: IntArray
