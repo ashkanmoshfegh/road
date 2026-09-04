@@ -13,7 +13,6 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
-import com.example.road.presentation.MapScreen
 import com.example.road.ui.theme.RoadTheme
 import dagger.hilt.android.AndroidEntryPoint
 
@@ -21,8 +20,6 @@ import dagger.hilt.android.AndroidEntryPoint
 class MainActivity : ComponentActivity() {
 
     private val locationPermission = Manifest.permission.ACCESS_FINE_LOCATION
-
-    // Declare the ViewModel at activity level – works outside composables
     private val viewModel: MainViewModel by viewModels()
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -30,9 +27,9 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             RoadTheme {
-                // Use the activity’s ViewModel inside the composable
-                val position by viewModel.currentPosition.collectAsState()
                 val source by viewModel.currentSource.collectAsState()
+                val dest by viewModel.dest.collectAsState()
+                val isMoving by viewModel.isMoving.collectAsState()
 
                 Surface(modifier = Modifier.fillMaxSize()) {
                     Column(
@@ -43,41 +40,43 @@ class MainActivity : ComponentActivity() {
                         Text("Navigation Source: $source", style = MaterialTheme.typography.titleLarge)
                         Spacer(modifier = Modifier.height(16.dp))
 
-                        MapScreen(modifier = Modifier.weight(1f))
+                        MapScreen(
+                            modifier = Modifier.weight(1f),
+                            onMapTap = { lat, lon -> viewModel.onMapTap(lat, lon) }
+                        )
                         Spacer(modifier = Modifier.height(16.dp))
 
-                        position?.let { pos ->
-                            Text("Lat: ${pos.latitude}")
-                            Text("Lon: ${pos.longitude}")
-                            Text("Bearing: ${pos.bearing}")
-                            Text("Accuracy: ${pos.accuracy}")
-                        } ?: Text("Waiting for location...")
+                        if (dest != null && !isMoving) {
+                            Button(onClick = { viewModel.startSimulation() }) {
+                                Text("Start Simulation")
+                            }
+                        } else {
+                            Text("Tap the map to set start, then destination")
+                        }
                     }
                 }
             }
         }
 
-        // Request permissions and start GPS updates
         if (ContextCompat.checkSelfPermission(this, locationPermission) == PackageManager.PERMISSION_GRANTED) {
-            startGpsUpdates()
+            startGpsAndSensors()
         } else {
             requestPermissions(arrayOf(locationPermission), 100)
         }
     }
 
-    private fun startGpsUpdates() {
+    private fun startGpsAndSensors() {
+        viewModel.startSensors()
+
         if (ContextCompat.checkSelfPermission(this, locationPermission) != PackageManager.PERMISSION_GRANTED) return
 
         val locationManager = getSystemService(LOCATION_SERVICE) as android.location.LocationManager
-
         locationManager.requestLocationUpdates(
             android.location.LocationManager.GPS_PROVIDER,
             1000L,
             1f,
             object : android.location.LocationListener {
-                override fun onLocationChanged(location: Location) {
-                    viewModel.onGpsLocation(location)  // Use the activity‑level ViewModel
-                }
+                override fun onLocationChanged(location: Location) {}
                 override fun onProviderEnabled(provider: String) {}
                 override fun onProviderDisabled(provider: String) {}
                 override fun onStatusChanged(provider: String, status: Int, extras: Bundle?) {}
@@ -92,7 +91,7 @@ class MainActivity : ComponentActivity() {
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == 100 && grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-            startGpsUpdates()
+            startGpsAndSensors()
         }
     }
 }
