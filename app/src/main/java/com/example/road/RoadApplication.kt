@@ -4,18 +4,23 @@ import android.app.Application
 import androidx.preference.PreferenceManager
 import dagger.hilt.android.HiltAndroidApp
 import org.osmdroid.config.Configuration
+import java.io.File
 
 @HiltAndroidApp
 class RoadApplication : Application() {
-
     override fun onCreate() {
         super.onCreate()
-        // Must run before any osmdroid MapView is created, or OSM's tile
-        // servers will 403 the requests (they reject blank/default User-Agent values).
-        Configuration.getInstance().load(
-            this,
-            PreferenceManager.getDefaultSharedPreferences(this)
-        )
+        
+        // Load osmdroid configuration
+        val sharedPrefs = PreferenceManager.getDefaultSharedPreferences(this)
+        Configuration.getInstance().load(this, sharedPrefs)
         Configuration.getInstance().userAgentValue = packageName
+        
+        // Explicitly set cache directories to internal storage to avoid permission issues
+        val osmdroidDir = File(cacheDir, "osmdroid")
+        if (!osmdroidDir.exists()) osmdroidDir.mkdirs()
+
+        Configuration.getInstance().osmdroidBasePath = osmdroidDir
+        Configuration.getInstance().osmdroidTileCache = File(osmdroidDir, "tiles")
     }
 }

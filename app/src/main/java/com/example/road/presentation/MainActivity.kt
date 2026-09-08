@@ -6,6 +6,7 @@ import android.location.Location
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
@@ -23,6 +24,7 @@ class MainActivity : ComponentActivity() {
     private val viewModel: MainViewModel by viewModels()
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        enableEdgeToEdge()
         super.onCreate(savedInstanceState)
 
         setContent {
@@ -32,26 +34,30 @@ class MainActivity : ComponentActivity() {
                 val isMoving by viewModel.isMoving.collectAsState()
 
                 Surface(modifier = Modifier.fillMaxSize()) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(24.dp)
-                    ) {
-                        Text("Navigation Source: $source", style = MaterialTheme.typography.titleLarge)
-                        Spacer(modifier = Modifier.height(16.dp))
-
+                    Box(modifier = Modifier.fillMaxSize()) {
                         MapScreen(
-                            modifier = Modifier.weight(1f),
+                            modifier = Modifier.fillMaxSize(),
                             onMapTap = { lat, lon -> viewModel.onMapTap(lat, lon) }
                         )
-                        Spacer(modifier = Modifier.height(16.dp))
 
-                        if (dest != null && !isMoving) {
-                            Button(onClick = { viewModel.startSimulation() }) {
-                                Text("Start Simulation")
+                        Column(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .safeDrawingPadding()   // <-- keeps content clear of status/nav bars
+                                .padding(24.dp)
+                        ) {
+                            Text("Navigation Source: $source", style = MaterialTheme.typography.titleLarge)
+                            Spacer(modifier = Modifier.height(16.dp))
+                            
+                            Spacer(modifier = Modifier.weight(1f))
+
+                            if (dest != null && !isMoving) {
+                                Button(onClick = { viewModel.startSimulation() }) {
+                                    Text("Start Simulation")
+                                }
+                            } else {
+                                Text("Tap the map to set start, then destination")
                             }
-                        } else {
-                            Text("Tap the map to set start, then destination")
                         }
                     }
                 }

@@ -95,7 +95,8 @@ class ResilienceManager @Inject constructor(
             val displacement = sensorFusion.update(gyroZ, accelMag, currentTime)
             displacement?.let { (dx, dy) ->
                 val newLat = lastGpsPosition!!.latitude + dx / 111320.0
-                val newLon = lastGpsPosition!!.longitude + dy / (111320.0 * kotlin.math.cos(lastGpsPosition!!.latitude))
+                val newLon = lastGpsPosition!!.longitude +
+                        dy / (111320.0 * kotlin.math.cos(Math.toRadians(lastGpsPosition!!.latitude)))
                 val newPos = Position(
                     latitude = newLat,
                     longitude = newLon,

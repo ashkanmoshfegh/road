@@ -1,14 +1,12 @@
 package com.example.road.utils
 
-import CustomRegisterReceiver
 import android.content.Context
 import org.osmdroid.tileprovider.IRegisterReceiver
 import org.osmdroid.tileprovider.MapTileProviderArray
 import org.osmdroid.tileprovider.modules.MapTileFileArchiveProvider
 import org.osmdroid.tileprovider.modules.MBTilesFileArchive
-import org.osmdroid.tileprovider.tilesource.TileSourceFactory
+import org.osmdroid.tileprovider.tilesource.XYTileSource
 import java.io.File
-
 
 object OfflineTileProvider {
 
@@ -19,14 +17,19 @@ object OfflineTileProvider {
         if (!mbtilesFile.exists()) {
             copyFromAssetsIfPresent(context, mbtilesFile)
         }
+        
         if (!mbtilesFile.exists()) {
-            throw IllegalStateException(
-                "Offline map not found. Expected either app/src/main/assets/$MBTILES_FILE_NAME " +
-                        "or a file already placed at ${mbtilesFile.absolutePath}."
-            )
+            throw IllegalStateException("Offline map file not found at ${mbtilesFile.absolutePath}")
         }
 
-        val tileSource = TileSourceFactory.MAPNIK
+        // Use a generic XYTileSource. The name "Tehran" or "openmaptiles" is common, 
+        // but osmdroid's MBTilesFileArchive often maps to the internal metadata name.
+        val tileSource = XYTileSource(
+            "Tehran", 
+            10, 17, 256, ".png", 
+            emptyArray()
+        )
+
         val archive = MBTilesFileArchive.getDatabaseFileArchive(mbtilesFile)
         val registerReceiver: IRegisterReceiver = CustomRegisterReceiver(context)
 
@@ -44,8 +47,8 @@ object OfflineTileProvider {
             context.assets.open(MBTILES_FILE_NAME).use { input ->
                 destination.outputStream().use { output -> input.copyTo(output) }
             }
-        } catch (e: java.io.FileNotFoundException) {
-            // Not bundled in assets either — caller throws a clear error above.
+        } catch (e: Exception) {
+            e.printStackTrace()
         }
     }
 }

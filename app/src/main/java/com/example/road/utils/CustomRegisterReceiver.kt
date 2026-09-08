@@ -1,11 +1,18 @@
+package com.example.road.utils
+
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.IntentFilter
+import android.os.Build
 import org.osmdroid.tileprovider.IRegisterReceiver
 
 class CustomRegisterReceiver(private val context: Context) : IRegisterReceiver {
     override fun registerReceiver(receiver: BroadcastReceiver?, filter: IntentFilter?): android.content.Intent? {
-        return context.registerReceiver(receiver, filter)
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            context.registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            context.registerReceiver(receiver, filter)
+        }
     }
 
     override fun unregisterReceiver(receiver: BroadcastReceiver?) {
