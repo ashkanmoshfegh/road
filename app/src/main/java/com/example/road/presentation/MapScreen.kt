@@ -12,20 +12,37 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
-import com.example.road.utils.GraphLoader
-import com.example.road.utils.OfflineTileProvider
+import com.example.road.utils.MbtilesTileProvider
+import com.example.road.utils.OsmXmlParser
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.osmdroid.events.MapEventsReceiver
 import org.osmdroid.util.GeoPoint
 import org.osmdroid.views.MapView
 import org.osmdroid.views.overlay.MapEventsOverlay
+import org.osmdroid.views.overlay.Polygon
 import org.osmdroid.views.overlay.Polyline
 
 private val TEHRAN_CENTER = GeoPoint(35.6892, 51.3890)
 private const val MIN_ZOOM = 10.0
-private const val MAX_ZOOM = 17.0
+private const val MAX_ZOOM = 18.0   // match tehran.mbtiles render range
 private const val INITIAL_ZOOM = 13.0
+
+// The OSM vector file extracted from tehran-extract.osm.pbf (Tehran bbox only)
+private const val OSM_FILE_NAME = "tehran-map.osm"
+
+
+private fun styleForHighway(highway: String): Pair<String, Float> = when (highway) {
+    "motorway", "motorway_link" -> "#E8622C" to 7f
+    "trunk", "trunk_link" -> "#EA8B4B" to 6f
+    "primary", "primary_link" -> "#F2B950" to 5f
+    "secondary", "secondary_link" -> "#F7DC6F" to 4.5f
+    "tertiary", "tertiary_link" -> "#FFFFFF" to 4f
+    "residential", "living_street", "unclassified" -> "#D8D8D8" to 3f
+    "service", "track" -> "#BFBFBF" to 2f
+    "footway", "path", "cycleway", "steps", "pedestrian" -> "#9E9E9E" to 1.5f
+    else -> "#C9C9C9" to 2f
+}
 
 @Composable
 fun MapScreen(
@@ -36,7 +53,7 @@ fun MapScreen(
     val lifecycleOwner = LocalLifecycleOwner.current
 
     val mapView = remember {
-        val tileProvider = OfflineTileProvider.create(context)
+        val tileProvider = MbtilesTileProvider.create(context)
         MapView(context, tileProvider).apply {
             setUseDataConnection(false)
             setMultiTouchControls(true)
@@ -77,25 +94,41 @@ fun MapScreen(
         factory = { mapView }
     )
 
-    LaunchedEffect(Unit) {
+    // Parse the OSM vector file and draw it as overlays on top of the MBTiles basemap.
+    // Water polygons first (bottom layer), then buildings, then roads on top.
+    LaunchedEffect(mapView) {
         withContext(Dispatchers.IO) {
             try {
-                // Load the graph edges from JSON
-                val graphData = GraphLoader.loadGraph(context, "graph.json")
-                val edges = graphData.second
-                
+                val osmData = OsmXmlParser.parseFromAssets(context, OSM_FILE_NAME)
+
                 withContext(Dispatchers.Main) {
-                    // Limiting edges to prevent OOM/UI freeze if the graph is huge
-                    edges.take(1000).forEach { edge ->
+                    // Water polygons (bottom layer)
+                    osmData.water.forEach { area ->
+                        val polygon = Polygon(mapView).apply {
+                            setPoints(area.points)
+                            setFillColor(Color.parseColor("#AAD3DF"))
+                            setStrokeColor(Color.parseColor("#AAD3DF"))
+                            setStrokeWidth(1f)
+                        }
+                        mapView.overlays.add(polygon)
+                    }
+                    // Building footprints
+                    osmData.buildings.forEach { area ->
+                        val polygon = Polygon(mapView).apply {
+                            setPoints(area.points)
+                            setFillColor(Color.parseColor("#D9CFC4"))
+                            setStrokeColor(Color.parseColor("#D9CFC4"))
+                            setStrokeWidth(1f)
+                        }
+                        mapView.overlays.add(polygon)
+                    }
+                    // Roads on top (colored by highway type)
+                    osmData.roads.forEach { road ->
+                        val (colorHex, width) = styleForHighway(road.highway)
                         val line = Polyline(mapView).apply {
-                            outlinePaint.color = Color.parseColor("#2979FF")
-                            outlinePaint.strokeWidth = 3f
-                            setPoints(
-                                listOf(
-                                    GeoPoint(edge.from.lat, edge.from.lon),
-                                    GeoPoint(edge.to.lat, edge.to.lon)
-                                )
-                            )
+                            outlinePaint.color = Color.parseColor(colorHex)
+                            outlinePaint.strokeWidth = width
+                            setPoints(road.points)
                         }
                         mapView.overlays.add(line)
                     }
