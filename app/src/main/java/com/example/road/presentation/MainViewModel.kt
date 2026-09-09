@@ -1,6 +1,5 @@
 package com.example.road.presentation
 
-import android.location.Location
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.road.data.m.model.Position
@@ -30,11 +29,14 @@ class MainViewModel @Inject constructor(
     private val _routePoints = MutableStateFlow<List<Position>>(emptyList())
     val routePoints: StateFlow<List<Position>> = _routePoints.asStateFlow()
 
+    // Expose the live current position from ResilienceManager
+    val currentPosition: StateFlow<Position?> = resilienceManager.currentPosition
+
+    // Expose the navigation source (GPS / INS / etc.)
+    val currentSource: StateFlow<String> = resilienceManager.currentSource
+
     private val _isMoving = MutableStateFlow(false)
     val isMoving: StateFlow<Boolean> = _isMoving.asStateFlow()
-
-    // Expose source from resilienceManager
-    val currentSource: StateFlow<String> = resilienceManager.currentSource
 
     init {
         viewModelScope.launch {
@@ -42,7 +44,7 @@ class MainViewModel @Inject constructor(
         }
     }
 
-    // ----- Map taps -----
+    // ----- Map taps: set start, then destination, then reset -----
     fun onMapTap(lat: Double, lon: Double) {
         val pos = Position(lat, lon, 0f)
         if (_start.value == null) {
@@ -51,7 +53,7 @@ class MainViewModel @Inject constructor(
             _dest.value = pos
             calculateRoute()
         } else {
-            // Reset: start becomes new point, destination cleared
+            // Reset: new start, clear destination + route
             _start.value = pos
             _dest.value = null
             _routePoints.value = emptyList()
@@ -70,15 +72,15 @@ class MainViewModel @Inject constructor(
                 _routePoints.value = positions
             } catch (e: Exception) {
                 e.printStackTrace()
+                _routePoints.value = emptyList()
             }
         }
     }
 
-    // ----- Simulation -----
+    // ----- Simulation (existing behaviour, kept) -----
     fun startSimulation() {
         val route = _routePoints.value
         if (route.isEmpty() || _isMoving.value) return
-
         _isMoving.value = true
         viewModelScope.launch {
             for (i in 0 until route.size step 2) {
@@ -88,10 +90,7 @@ class MainViewModel @Inject constructor(
                 } else {
                     if (i > 0) calculateBearing(route[i - 1], point) else 0f
                 }
-
-                // Simulate GPS position
                 resilienceManager.simulateGpsLocation(point.latitude, point.longitude, bearing)
-
                 delay(300)
             }
             _isMoving.value = false
@@ -106,17 +105,12 @@ class MainViewModel @Inject constructor(
         val dLon = lon2 - lon1
         val y = Math.sin(dLon) * Math.cos(lat2)
         val x = Math.cos(lat1) * Math.sin(lat2) - Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLon)
-        return Math.toDegrees(Math.atan2(y, x)).toFloat()
+        return Math.toDegrees(Math.atan2(y, x)).toFloat().let { (it + 360) % 360 }
     }
 
     // ----- Sensor control -----
-    fun startSensors() {
-        resilienceManager.startSensors()
-    }
-
-    fun stopSensors() {
-        resilienceManager.stopSensors()
-    }
+    fun startSensors() = resilienceManager.startSensors()
+    fun stopSensors()  = resilienceManager.stopSensors()
 
     override fun onCleared() {
         resilienceManager.stopSensors()

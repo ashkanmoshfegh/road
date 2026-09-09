@@ -2,7 +2,6 @@ package com.example.road.presentation
 
 import android.Manifest
 import android.content.pm.PackageManager
-import android.location.Location
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -11,6 +10,7 @@ import androidx.activity.viewModels
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
@@ -29,34 +29,89 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             RoadTheme {
-                val source by viewModel.currentSource.collectAsState()
-                val dest by viewModel.dest.collectAsState()
-                val isMoving by viewModel.isMoving.collectAsState()
+                val start       by viewModel.start.collectAsState()
+                val dest        by viewModel.dest.collectAsState()
+                val route       by viewModel.routePoints.collectAsState()
+                val currentPos  by viewModel.currentPosition.collectAsState()
+                val source      by viewModel.currentSource.collectAsState()
+                val isMoving    by viewModel.isMoving.collectAsState()
 
                 Surface(modifier = Modifier.fillMaxSize()) {
                     Box(modifier = Modifier.fillMaxSize()) {
                         MapScreen(
                             modifier = Modifier.fillMaxSize(),
-                            onMapTap = { lat, lon -> viewModel.onMapTap(lat, lon) }
+                            onMapTap = { lat, lon -> viewModel.onMapTap(lat, lon) },
+                            start = start,
+                            dest = dest,
+                            route = route,
+                            currentPosition = currentPos,
                         )
 
+                        // HUD overlay — source + position + accuracy
                         Column(
                             modifier = Modifier
                                 .fillMaxSize()
-                                .safeDrawingPadding()   // <-- keeps content clear of status/nav bars
-                                .padding(24.dp)
+                                .safeDrawingPadding()
+                                .padding(horizontal = 16.dp, vertical = 80.dp),
+                            verticalArrangement = Arrangement.SpaceBetween
                         ) {
-                            Text("Navigation Source: $source", style = MaterialTheme.typography.titleLarge)
-                            Spacer(modifier = Modifier.height(16.dp))
-                            
+                            // Top: current position card
+                            Card(
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = CardDefaults.cardColors(
+                                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.85f)
+                                )
+                            ) {
+                                Column(modifier = Modifier.padding(12.dp)) {
+                                    Text("Navigation Source: $source",
+                                        style = MaterialTheme.typography.labelMedium)
+                                    currentPos?.let { pos ->
+                                        Text(
+                                            "Lat: ${"%.6f".format(pos.latitude)}  Lon: ${"%.6f".format(pos.longitude)}",
+                                            style = MaterialTheme.typography.bodyMedium
+                                        )
+                                        if (pos.accuracy > 0) {
+                                            Text(
+                                                "Accuracy: ${pos.accuracy.toInt()}m",
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                        if (pos.bearing != 0f) {
+                                            Text(
+                                                "Heading: ${pos.bearing.toInt()}°",
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+
                             Spacer(modifier = Modifier.weight(1f))
 
-                            if (dest != null && !isMoving) {
-                                Button(onClick = { viewModel.startSimulation() }) {
+                            // Bottom: action buttons
+                            if (dest != null && route.isNotEmpty() && !isMoving) {
+                                Button(
+                                    onClick = { viewModel.startSimulation() },
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
                                     Text("Start Simulation")
                                 }
+                                TextButton(
+                                    onClick = { viewModel.stopSensors() },
+                                    modifier = Modifier.align(Alignment.CenterHorizontally)
+                                ) {
+                                    Text("Stop Sensors")
+                                }
                             } else {
-                                Text("Tap the map to set start, then destination")
+                                Text(
+                                    if (start == null) "Tap map: set START (green)"
+                                    else if (dest == null) "Tap map: set DESTINATION (red)"
+                                    else "Route shown. Tap to reset.",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
                             }
                         }
                     }
@@ -64,30 +119,12 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+        // Request location permission and start sensors
         if (ContextCompat.checkSelfPermission(this, locationPermission) == PackageManager.PERMISSION_GRANTED) {
-            startGpsAndSensors()
+            viewModel.startSensors()
         } else {
             requestPermissions(arrayOf(locationPermission), 100)
         }
-    }
-
-    private fun startGpsAndSensors() {
-        viewModel.startSensors()
-
-        if (ContextCompat.checkSelfPermission(this, locationPermission) != PackageManager.PERMISSION_GRANTED) return
-
-        val locationManager = getSystemService(LOCATION_SERVICE) as android.location.LocationManager
-        locationManager.requestLocationUpdates(
-            android.location.LocationManager.GPS_PROVIDER,
-            1000L,
-            1f,
-            object : android.location.LocationListener {
-                override fun onLocationChanged(location: Location) {}
-                override fun onProviderEnabled(provider: String) {}
-                override fun onProviderDisabled(provider: String) {}
-                override fun onStatusChanged(provider: String, status: Int, extras: Bundle?) {}
-            }
-        )
     }
 
     override fun onRequestPermissionsResult(
@@ -97,7 +134,7 @@ class MainActivity : ComponentActivity() {
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == 100 && grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-            startGpsAndSensors()
+            viewModel.startSensors()
         }
     }
 }
