@@ -7,6 +7,7 @@ import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.Typeface
 import android.location.Location
+import android.util.Log
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -39,9 +40,9 @@ private const val INITIAL_ZOOM = 13.0
 
 private const val OSM_FILE_NAME = "tehran-map.osm"
 
-private val START_MARKER_COLOR = android.graphics.Color.parseColor("#2E7D32")
-private val DEST_MARKER_COLOR  = android.graphics.Color.parseColor("#C62828")
-private val ROUTE_LINE_COLOR   = android.graphics.Color.parseColor("#FFD600")
+private val START_MARKER_COLOR = Color.parseColor("#2E7D32")
+private val DEST_MARKER_COLOR  = Color.parseColor("#C62828")
+private val ROUTE_LINE_COLOR   = Color.parseColor("#FFD600")
 
 private val ROAD_HIGHWAYS = setOf(
     "motorway", "motorway_link",
@@ -56,33 +57,25 @@ private val ROAD_HIGHWAYS = setOf(
 private const val MAX_OSM_POINTS = 800_000
 
 private fun styleForHighway(highway: String): Pair<Int, Float> = when (highway) {
-    "motorway", "motorway_link" -> android.graphics.Color.parseColor("#E8622C") to 7f
-    "trunk", "trunk_link"       -> android.graphics.Color.parseColor("#EA8B4B") to 6f
-    "primary", "primary_link"   -> android.graphics.Color.parseColor("#F2B950") to 5f
-    "secondary", "secondary_link"-> android.graphics.Color.parseColor("#F7DC6F") to 4f
-    "tertiary", "tertiary_link" -> android.graphics.Color.parseColor("#FFFFFF") to 3.5f
-    "residential", "living_street", "unclassified" -> android.graphics.Color.parseColor("#D8D8D8") to 3f
-    "service", "track"          -> android.graphics.Color.parseColor("#BFBFBF") to 2f
-    "footway", "path", "cycleway", "steps", "pedestrian" -> android.graphics.Color.parseColor("#9E9E9E") to 1.5f
-    else                        -> android.graphics.Color.parseColor("#C9C9C9") to 2f
+    "motorway", "motorway_link" -> Color.parseColor("#E8622C") to 7f
+    "trunk", "trunk_link"       -> Color.parseColor("#EA8B4B") to 6f
+    "primary", "primary_link"   -> Color.parseColor("#F2B950") to 5f
+    "secondary", "secondary_link"-> Color.parseColor("#F7DC6F") to 4f
+    "tertiary", "tertiary_link" -> Color.parseColor("#FFFFFF") to 3.5f
+    "residential", "living_street", "unclassified" -> Color.parseColor("#D8D8D8") to 3f
+    "service", "track"          -> Color.parseColor("#BFBFBF") to 2f
+    "footway", "path", "cycleway", "steps", "pedestrian" -> Color.parseColor("#9E9E9E") to 1.5f
+    else                        -> Color.parseColor("#C9C9C9") to 2f
 }
 
 // ---------- Location overlay ----------
 
-// Extends MyLocationNewOverlay to reuse its drawMyLocation() logic.
-// Overrides draw(Canvas, MapView, Boolean) — the signature osmdroid definitely calls.
-// We draw the location dot whenever getLastFix() is set (via update()), regardless of
-// whether the GPS provider is "enabled" (which may fail if GPS hardware is absent).
 class MyLocationOverlay(context: Context, mapView: MapView) : MyLocationNewOverlay(GpsMyLocationProvider(context), mapView) {
 
     init {
         setDrawAccuracyEnabled(true)
     }
 
-    /**
-     * Set the displayed location manually. Works even without GPS hardware —
-     * setLocation() stores the Location, then we invalidate and draw() renders it.
-     */
     fun update(lat: Double, lon: Double, bearingDeg: Float) {
         val loc = Location("manual").apply {
             longitude = lon
@@ -91,12 +84,10 @@ class MyLocationOverlay(context: Context, mapView: MapView) : MyLocationNewOverl
             altitude = 0.0
         }
         loc.bearing = bearingDeg
-        setLocation(loc)  // stores in mLocation (via MyLocationNewOverlay.setLocation)
-        mMapView.invalidate()  // force redraw — draw() will pick up getLastFix()
+        setLocation(loc)
+        mMapView.invalidate()
     }
 
-    // The overlay manager calls draw(Canvas, Projection) — override the 2-arg version.
-    // Bypass MyLocationNewOverlay's isMyLocationEnabled() check (false without real GPS).
     override fun draw(canvas: Canvas, projection: Projection) {
         val fix = getLastFix() ?: return
         drawMyLocation(canvas, projection, fix)
@@ -105,8 +96,6 @@ class MyLocationOverlay(context: Context, mapView: MapView) : MyLocationNewOverl
 
 // ---------- Route markers overlay ----------
 
-// Overrides draw(Canvas, MapView, Boolean) — the signature osmdroid's overlay manager calls.
-// Delegates to a private drawInto() that handles the actual rendering.
 class RouteMarkersOverlay(private val mapView: MapView) : Overlay() {
 
     data class MarkerInfo(
@@ -128,14 +117,14 @@ class RouteMarkersOverlay(private val mapView: MapView) : Overlay() {
         isAntiAlias = true
     }
     private val markerFont = Paint().apply {
-        color = android.graphics.Color.WHITE
+        color = Color.WHITE
         textSize = 36f
         textAlign = Paint.Align.CENTER
         isAntiAlias = true
         typeface = Typeface.DEFAULT_BOLD
     }
     private val haloPaint = Paint().apply {
-        color = android.graphics.Color.WHITE
+        color = Color.WHITE
         style = Paint.Style.FILL
         isAntiAlias = true
     }
@@ -151,14 +140,12 @@ class RouteMarkersOverlay(private val mapView: MapView) : Overlay() {
         mapView.invalidate()
     }
 
-    // The overlay manager calls draw(Canvas, Projection) — override the 2-arg version.
     override fun draw(canvas: Canvas, projection: Projection) {
         if (projection == null) return
         drawInto(canvas, projection)
     }
 
     private fun drawInto(canvas: Canvas, projection: Projection) {
-        // Route polyline
         if (routePoints.size >= 2) {
             val first = projection.toPixels(routePoints[0], null)
             val path = Path().apply { moveTo(first.x.toFloat(), first.y.toFloat()) }
@@ -169,12 +156,11 @@ class RouteMarkersOverlay(private val mapView: MapView) : Overlay() {
             canvas.drawPath(path, routePaint)
         }
 
-        // Markers
         fun drawMarker(marker: MarkerInfo?) {
             marker ?: return
             val px = projection.toPixels(marker.position, null)
             val radius = 28f
-            haloPaint.color = android.graphics.Color.WHITE
+            haloPaint.color = Color.WHITE
             canvas.drawCircle(px.x.toFloat(), px.y.toFloat(), radius + 5f, haloPaint)
             dotPaint.color = marker.color
             canvas.drawCircle(px.x.toFloat(), px.y.toFloat(), radius, dotPaint)
@@ -199,83 +185,107 @@ fun MapScreen(
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
 
-    val mapView = remember {
-        val tileProvider = MbtilesTileProvider.create(context)
-        MapView(context, tileProvider).apply {
-            setUseDataConnection(false)
-            setMultiTouchControls(true)
-            minZoomLevel = MIN_ZOOM
-            maxZoomLevel = MAX_ZOOM
-            controller.setZoom(INITIAL_ZOOM)
-            controller.setCenter(TEHRAN_CENTER)
+    val tileProvider = remember { MbtilesTileProvider.create(context) }
 
-            val tapReceiver = object : MapEventsReceiver {
-                override fun singleTapConfirmedHelper(p: GeoPoint): Boolean {
-                    onMapTap(p.latitude, p.longitude)
-                    return true
+    // State holders for mapView + overlays so we can update them after creation
+    val mapViewRef = remember { mutableStateOf<MapView?>(null) }
+    val routeMarkersRef = remember { mutableStateOf<RouteMarkersOverlay?>(null) }
+    val locationOverlayRef = remember { mutableStateOf<MyLocationOverlay?>(null) }
+
+    AndroidView(
+        modifier = modifier.fillMaxSize(),
+        factory = { ctx ->
+            try {
+                MapView(ctx, tileProvider).apply {
+                    setBackgroundColor(Color.BLACK)
+                    setUseDataConnection(false)
+                    setMultiTouchControls(true)
+                    minZoomLevel = MIN_ZOOM
+                    maxZoomLevel = MAX_ZOOM
+                    controller.setZoom(INITIAL_ZOOM)
+                    controller.setCenter(TEHRAN_CENTER)
+
+                    val tapReceiver = object : MapEventsReceiver {
+                        override fun singleTapConfirmedHelper(p: GeoPoint): Boolean {
+                            onMapTap(p.latitude, p.longitude)
+                            return true
+                        }
+                        override fun longPressHelper(p: GeoPoint): Boolean = false
+                    }
+                    overlays.add(MapEventsOverlay(tapReceiver))
+                    overlays.add(CompassOverlay(ctx, this))
+
+                    // Create and attach overlays
+                    val locOverlay = MyLocationOverlay(ctx, this)
+                    locationOverlayRef.value = locOverlay
+                    overlays.add(locOverlay)
+
+                    val routeOverlay = RouteMarkersOverlay(this)
+                    routeMarkersRef.value = routeOverlay
+                    overlays.add(routeOverlay)
+
+                    // Store mapView reference for lifecycle + OSM loading
+                    mapViewRef.value = this
                 }
-                override fun longPressHelper(p: GeoPoint): Boolean = false
+            } catch (e: Exception) {
+                Log.e("MapScreen", "FATAL: MapView creation failed", e)
+                throw e
             }
-            overlays.add(MapEventsOverlay(tapReceiver))
-            overlays.add(CompassOverlay(context, this))
+        },
+        update = { mapView ->
+            // Update route markers + location whenever Compose state changes
+            routeMarkersRef.value?.update(start, dest, route)
+            locationOverlayRef.value?.let { locOverlay ->
+                currentPosition?.let { pos ->
+                    locOverlay.update(pos.latitude, pos.longitude, pos.bearing)
+                    try {
+                        mapView.controller.animateTo(GeoPoint(pos.latitude, pos.longitude))
+                    } catch (_: Exception) {}
+                }
+            }
         }
-    }
+    )
 
-    val locationOverlay = remember(context, mapView) {
-        MyLocationOverlay(context, mapView)
-    }
-    val routeMarkers = remember(context, mapView) {
-        RouteMarkersOverlay(mapView)
-    }
-
-    // Add overlays to mapView so they get drawn
-    LaunchedEffect(mapView, locationOverlay, routeMarkers) {
-        mapView.overlays.add(locationOverlay)
-        mapView.overlays.add(routeMarkers)
-        mapView.invalidate()
-    }
-
+    // Lifecycle: onResume / onPause
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
-                Lifecycle.Event.ON_RESUME -> { mapView.onResume(); locationOverlay.onResume() }
-                Lifecycle.Event.ON_PAUSE  -> { mapView.onPause();  locationOverlay.onPause() }
+                Lifecycle.Event.ON_RESUME -> {
+                    mapViewRef.value?.onResume()
+                    locationOverlayRef.value?.onResume()
+                }
+                Lifecycle.Event.ON_PAUSE -> {
+                    mapViewRef.value?.onPause()
+                    locationOverlayRef.value?.onPause()
+                }
                 else -> {}
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose {
             lifecycleOwner.lifecycle.removeObserver(observer)
-            mapView.onDetach()
-            locationOverlay.onDetach(mapView)
+            mapViewRef.value?.onDetach()
+            locationOverlayRef.value?.onDetach(mapViewRef.value)
         }
     }
 
-    LaunchedEffect(mapView) {
+    // Load OSM vector data from assets and draw overlays
+    LaunchedEffect(Unit) {
         withContext(Dispatchers.IO) {
             try {
                 val osmData = OsmXmlParser.parseFromAssets(context, OSM_FILE_NAME)
+                Log.d("MapScreen", "OSM data loaded: ${osmData.water.size} water, ${osmData.buildings.size} buildings, ${osmData.roads.size} roads")
                 withContext(Dispatchers.Main) {
-                    drawOsmOverlays(mapView, osmData)
+                    mapViewRef.value?.let { mv ->
+                        drawOsmOverlays(mv, osmData)
+                        mv.invalidate()
+                    }
                 }
             } catch (e: Exception) {
-                e.printStackTrace()
+                Log.e("MapScreen", "Failed to load OSM data: ${e.message}", e)
             }
         }
     }
-
-    LaunchedEffect(start, dest, route, currentPosition) {
-        routeMarkers.update(start, dest, route)
-        currentPosition?.let { pos ->
-            locationOverlay.update(pos.latitude, pos.longitude, pos.bearing)
-            mapView.controller.animateTo(GeoPoint(pos.latitude, pos.longitude))
-        }
-    }
-
-    AndroidView(
-        modifier = modifier.fillMaxSize(),
-        factory = { mapView }
-    )
 }
 
 // ---------- OSM overlay drawing ----------
@@ -283,6 +293,8 @@ fun MapScreen(
 private fun drawOsmOverlays(mapView: MapView, data: OsmXmlParser.ParseResult) {
     var totalPoints = 0L
     val zoom = mapView.getZoomLevelDouble()
+
+    Log.d("MapScreen", "Drawing OSM overlays at zoom=$zoom, water=${data.water.size}, buildings=${data.buildings.size}, roads=${data.roads.size}")
 
     for (area in data.water) {
         if (totalPoints + area.points.size > MAX_OSM_POINTS) break
@@ -323,5 +335,6 @@ private fun drawOsmOverlays(mapView: MapView, data: OsmXmlParser.ParseResult) {
         }
     }
 
+    Log.d("MapScreen", "Total OSM points drawn: $totalPoints")
     mapView.invalidate()
 }

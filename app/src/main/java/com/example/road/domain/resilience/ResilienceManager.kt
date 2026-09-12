@@ -8,18 +8,25 @@ import android.hardware.SensorManager
 import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
+import android.util.Log
 import com.example.road.data.m.model.Position
 import com.example.road.data.m.local.repository.GraphRepository
 import com.example.road.domain.routing.RouteCalculator
 import com.example.road.domain.routing.TrafficPredictor
+import com.example.road.utils.GraphLoader
+import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlin.math.sqrt
 import javax.inject.Inject
 import javax.inject.Singleton
-import com.example.road.utils.GraphLoader
-import dagger.hilt.android.qualifiers.ApplicationContext
 
 @Singleton
 class ResilienceManager @Inject constructor(
@@ -54,10 +61,27 @@ class ResilienceManager @Inject constructor(
     private var sensorsActive = false
 
     suspend fun initialize() {
-        graphRepository.loadGraph()
+        // GraphHopper loading is a suspend fun that dispatches to IO — non-blocking.
+        val gh = graphRepository.loadGraph()
+        if (gh == null) {
+            Log.e("ResilienceManager", "GraphHopper failed to load — routing will not work")
+        } else {
+            Log.d("ResilienceManager", "GraphHopper loaded successfully")
+        }
         routeCalculator = RouteCalculator(graphRepository)
-        val (nodes, edges) = GraphLoader.loadGraph(context, "graph.json")
-        mapMatcher = MapMatcher(edges, nodes)
+        // Defer the heavy 57MB JSON parse (GraphLoader) + MapMatcher construction
+        // to a background coroutine so it doesn't block the main thread.
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                val (nodes, edges) = GraphLoader.loadGraph(context, "graph.json")
+                withContext(Dispatchers.Main) {
+                    mapMatcher = MapMatcher(edges, nodes)
+                    Log.d("ResilienceManager", "MapMatcher initialized with ${nodes.size} nodes, ${edges.size} edges")
+                }
+            } catch (e: Exception) {
+                Log.e("ResilienceManager", "Failed to load graph.json for MapMatcher", e)
+            }
+        }
     }
 
     // ---------- GPS callback (feeds anchor for INS correction) ----------

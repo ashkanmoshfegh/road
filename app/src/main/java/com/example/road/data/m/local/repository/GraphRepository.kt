@@ -1,14 +1,12 @@
 package com.example.road.data.m.local.repository
 
 import android.content.Context
+import android.util.Log
 import com.graphhopper.GraphHopper
-import com.graphhopper.config.CHProfile
-import com.graphhopper.config.Profile
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
-import java.io.FileOutputStream
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -16,51 +14,87 @@ import javax.inject.Singleton
 class GraphRepository @Inject constructor(
     @ApplicationContext private val context: Context
 ) {
+    companion object {
+        private const val OSM_FILE_NAME = "iran-260828.osm.pbf"
+    }
 
+    private val logTag = "GraphRepository"
     private var graphHopper: GraphHopper? = null
 
-    suspend fun loadGraph(): GraphHopper = withContext(Dispatchers.IO) {
-        graphHopper?.let { return@withContext it }
+    suspend fun loadGraph(): GraphHopper? {
+        Log.d(logTag, "loadGraph() called")
+        graphHopper?.let { return it }
 
         val osmFile = File(context.filesDir, OSM_FILE_NAME)
-        val graphCacheDir = File(context.filesDir, "graph-cache")
 
-        if (!osmFile.exists()) {
-            copyFromAssetsIfPresent(osmFile)
+        Log.d(logTag, "OSM file: ${osmFile.absolutePath}, exists=${osmFile.exists()}")
+        if (osmFile.exists()) {
+            Log.d(logTag, "OSM size: ${osmFile.length()} bytes")
+        } else {
+            Log.d(logTag, "Copying from assets...")
+            try {
+                context.assets.open(OSM_FILE_NAME).use { input ->
+                    osmFile.outputStream().use { output -> input.copyTo(output) }
+                }
+                Log.d(logTag, "Copy done, exists=${osmFile.exists()}, size=${osmFile.length()}")
+            } catch (e: Exception) {
+                Log.e(logTag, "Failed to copy from assets", e)
+                return null
+            }
         }
 
         if (!osmFile.exists()) {
-            throw IllegalStateException(
-                "OSM file not found. Expected either app/src/main/assets/$OSM_FILE_NAME " +
-                        "(copied automatically on first run) or a file already placed at " +
-                        "${osmFile.absolutePath}."
-            )
+            Log.e(logTag, "OSM file missing after copy — cannot load")
+            return null
         }
 
-        val gh = GraphHopper()
-        gh.setOSMFile(osmFile.absolutePath)
-        gh.setGraphHopperLocation(graphCacheDir.absolutePath)
-        gh.setProfiles(listOf(Profile("car").setVehicle("car").setWeighting("fastest")))
-        gh.getCHPreparationHandler().setCHProfiles(listOf(CHProfile("car")))
-        gh.importOrLoad()
+        val cacheDir = File(context.filesDir, "gh-cache")
+        val startTime = System.currentTimeMillis()
 
-        graphHopper = gh
-        return@withContext gh
+        return try {
+            val gh = GraphHopper()
+            gh.setOSMFile(osmFile.absolutePath)
+            gh.setGraphHopperLocation(cacheDir.absolutePath)
+            gh.setProfiles(listOf(
+                com.graphhopper.config.Profile("car")
+                    .setVehicle("car")
+                    .setWeighting("fastest")
+            ))
+            gh.getCHPreparationHandler()
+                .setCHProfiles(listOf(com.graphhopper.config.CHProfile("car")))
+            Log.d(logTag, "Calling importOrLoad()...")
+            gh.importOrLoad()
+            val elapsed = System.currentTimeMillis() - startTime
+            Log.d(logTag, "importOrLoad() OK in ${elapsed}ms")
+            graphHopper = gh
+            gh
+        } catch (e: OutOfMemoryError) {
+            val elapsed = System.currentTimeMillis() - startTime
+            Log.e(logTag, "GraphHopper OOM after ${elapsed}ms", e)
+            null
+        } catch (e: Exception) {
+            val elapsed = System.currentTimeMillis() - startTime
+            Log.e(logTag, "GraphHopper error after ${elapsed}ms: ${e.message}", e)
+            null
+        }
     }
 
     fun getGraph(): GraphHopper? = graphHopper
 
-    private fun copyFromAssetsIfPresent(destination: File) {
-        try {
-            context.assets.open(OSM_FILE_NAME).use { input ->
-                destination.outputStream().use { output -> input.copyTo(output) }
+    fun findNearest(graph: GraphHopper, lat: Double, lon: Double): com.graphhopper.storage.GraphHopperStorage.NodeAccess? {
+        val storage = graph.graphHopperStorage
+        if (storage == null) return null
+        val nodes = storage.nodes
+        var best: com.graphhopper.storage.GraphHopperStorage.NodeAccess? = null
+        var bestDist = Double.MAX_VALUE
+        for (i in 0 until nodes.size) {
+            val n = nodes.get(i)
+            val d = kotlin.math.hypot(n.lat - lat, n.lon - lon)
+            if (d < bestDist) {
+                bestDist = d
+                best = n
             }
-        } catch (e: java.io.FileNotFoundException) {
-            // Not bundled in assets either — caller throws a clear error above.
         }
-    }
-
-    companion object {
-        private const val OSM_FILE_NAME = "iran-260828.osm.pbf"
+        return best
     }
 }

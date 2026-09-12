@@ -23,6 +23,7 @@ android {
 
     androidResources {
         noCompress += "mbtiles"
+        noCompress += "json"
     }
 
     packaging {
