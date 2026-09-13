@@ -1,7 +1,8 @@
 package com.example.road.domain.resilience
 
-import android.hardware.Sensor
+import android.annotation.SuppressLint
 import android.content.Context
+import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
@@ -9,16 +10,14 @@ import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
 import android.util.Log
-import com.example.road.data.m.model.Position
 import com.example.road.data.m.local.repository.GraphRepository
+import com.example.road.data.m.model.Position
 import com.example.road.domain.routing.RouteCalculator
 import com.example.road.domain.routing.TrafficPredictor
 import com.example.road.utils.GraphLoader
 import dagger.hilt.android.qualifiers.ApplicationContext
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -31,7 +30,6 @@ import javax.inject.Singleton
 @Singleton
 class ResilienceManager @Inject constructor(
     @ApplicationContext private val context: Context,
-    private val sensorManager: SensorManager,
     private val graphRepository: GraphRepository,
     private val trafficPredictor: TrafficPredictor
 ) : SensorEventListener {
@@ -60,27 +58,52 @@ class ResilienceManager @Inject constructor(
     // Whether sensors are registered
     private var sensorsActive = false
 
-    suspend fun initialize() {
-        // GraphHopper loading is a suspend fun that dispatches to IO — non-blocking.
-        val gh = graphRepository.loadGraph()
-        if (gh == null) {
-            Log.e("ResilienceManager", "GraphHopper failed to load — routing will not work")
-        } else {
-            Log.d("ResilienceManager", "GraphHopper loaded successfully")
-        }
-        routeCalculator = RouteCalculator(graphRepository)
-        // Defer the heavy 57MB JSON parse (GraphLoader) + MapMatcher construction
-        // to a background coroutine so it doesn't block the main thread.
-        CoroutineScope(Dispatchers.IO).launch {
-            try {
-                val (nodes, edges) = GraphLoader.loadGraph(context, "graph.json")
-                withContext(Dispatchers.Main) {
-                    mapMatcher = MapMatcher(edges, nodes)
-                    Log.d("ResilienceManager", "MapMatcher initialized with ${nodes.size} nodes, ${edges.size} edges")
-                }
-            } catch (e: Exception) {
-                Log.e("ResilienceManager", "Failed to load graph.json for MapMatcher", e)
+    // GPS location listener (held so we can remove updates)
+    private var _gpsLocationListener: LocationListener? = null
+
+    // Convenience property so outer code can access it if needed
+    val gpsLocationListener: LocationListener
+        get() = _gpsLocationListener!!
+
+    init {
+        _gpsLocationListener = object : LocationListener {
+            override fun onLocationChanged(location: Location) {
+                onGpsLocation(location)
             }
+            override fun onProviderDisabled(provider: String) {}
+            override fun onProviderEnabled(provider: String) {}
+            override fun onStatusChanged(provider: String, status: Int, extras: android.os.Bundle?) {}
+        }
+    }
+
+    suspend fun initialize(): Boolean {
+            Log.d("ResilienceManager", "initialize() called")
+            return try {
+            val gh = graphRepository.loadGraph()
+            if (gh == null) {
+                Log.e("ResilienceManager", "GraphHopper failed to load — routing will not work")
+                false
+            } else {
+                Log.d("ResilienceManager", "GraphHopper loaded successfully")
+                routeCalculator = RouteCalculator(graphRepository)
+                // Defer the heavy 57MB JSON parse (GraphLoader) + MapMatcher construction
+                // to a background coroutine so it doesn't block the main thread.
+                CoroutineScope(Dispatchers.IO).launch {
+                    try {
+                        val (nodes, edges) = GraphLoader.loadGraph(context, "graph.json")
+                        withContext(Dispatchers.Main) {
+                            mapMatcher = MapMatcher(edges, nodes)
+                            Log.d("ResilienceManager", "MapMatcher initialized with ${nodes.size} nodes, ${edges.size} edges")
+                        }
+                    } catch (e: Exception) {
+                        Log.e("ResilienceManager", "Failed to load graph.json for MapMatcher", e)
+                    }
+                }
+                true
+            }
+        } catch (e: Exception) {
+            Log.e("ResilienceManager", "initialize() crashed", e)
+            false
         }
     }
 
@@ -183,9 +206,12 @@ class ResilienceManager @Inject constructor(
 
     // ---------- Sensor lifecycle ----------
 
+    @SuppressLint("MissingPermission")
     fun startSensors() {
         if (sensorsActive) return
         sensorsActive = true
+
+        val sensorManager = context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
 
         val accelerometer = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
         val gyroscope = sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE)
@@ -201,12 +227,13 @@ class ResilienceManager @Inject constructor(
         // Also register GPS listener — GPS feeds the anchor for INS correction
         try {
             val locationManager = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
+            val listener = _gpsLocationListener ?: return
             if (locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
                 locationManager.requestLocationUpdates(
                     LocationManager.GPS_PROVIDER,
                     1000L,  // 1 second interval
                     1f,     // 1 meter movement
-                    gpsLocationListener
+                    listener
                 )
             }
             // Also try network provider for faster initial fix
@@ -215,7 +242,7 @@ class ResilienceManager @Inject constructor(
                     LocationManager.NETWORK_PROVIDER,
                     1000L,
                     1f,
-                    gpsLocationListener
+                    listener
                 )
             }
         } catch (e: SecurityException) {
@@ -223,26 +250,17 @@ class ResilienceManager @Inject constructor(
         }
     }
 
+    @SuppressLint("MissingPermission")
     fun stopSensors() {
         sensorsActive = false
+        val sensorManager = context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
         sensorManager.unregisterListener(this)
         try {
             val locationManager = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
-            locationManager.removeUpdates(gpsLocationListener)
+            _gpsLocationListener?.let { locationManager.removeUpdates(it) }
         } catch (e: SecurityException) {
             e.printStackTrace()
         }
-    }
-
-    // ---------- GPS location listener (inner class) ----------
-
-    private val gpsLocationListener = object : LocationListener {
-        override fun onLocationChanged(location: Location) {
-            onGpsLocation(location)
-        }
-        override fun onProviderDisabled(provider: String) {}
-        override fun onProviderEnabled(provider: String) {}
-        override fun onStatusChanged(provider: String, status: Int, extras: android.os.Bundle?) {}
     }
 
     // ---------- Routing (existing) ----------

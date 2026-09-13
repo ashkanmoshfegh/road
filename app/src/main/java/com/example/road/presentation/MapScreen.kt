@@ -12,15 +12,16 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.example.road.data.m.model.Position
-import com.example.road.utils.MbtilesTileProvider
+import com.example.road.utils.BlankTileProvider
 import com.example.road.utils.OsmXmlParser
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -34,15 +35,20 @@ import org.osmdroid.views.overlay.mylocation.GpsMyLocationProvider
 import org.osmdroid.views.overlay.mylocation.MyLocationNewOverlay
 
 private val TEHRAN_CENTER = GeoPoint(35.6892, 51.3890)
-private const val MIN_ZOOM = 10.0
-private const val MAX_ZOOM = 18.0
+private const val MIN_ZOOM = 8.0
+private const val MAX_ZOOM = 21.0
 private const val INITIAL_ZOOM = 13.0
 
+// MUST match an actual file in app/src/main/assets/
 private const val OSM_FILE_NAME = "tehran-map.osm"
 
 private val START_MARKER_COLOR = Color.parseColor("#2E7D32")
 private val DEST_MARKER_COLOR  = Color.parseColor("#C62828")
 private val ROUTE_LINE_COLOR   = Color.parseColor("#FFD600")
+
+private val MAP_BG_COLOR       = Color.parseColor("#F2EFE9")
+private val WATER_COLOR        = Color.parseColor("#AAD3DF")
+private val BUILDING_COLOR     = Color.parseColor("#D9CFC4")
 
 private val ROAD_HIGHWAYS = setOf(
     "motorway", "motorway_link",
@@ -54,7 +60,8 @@ private val ROAD_HIGHWAYS = setOf(
     "service", "track", "road"
 )
 
-private const val MAX_OSM_POINTS = 800_000
+// Total vertex budget across *all* overlays. Raise if your device has RAM.
+private const val MAX_OSM_POINTS = 1_500_000
 
 private fun styleForHighway(highway: String): Pair<Int, Float> = when (highway) {
     "motorway", "motorway_link" -> Color.parseColor("#E8622C") to 7f
@@ -68,13 +75,9 @@ private fun styleForHighway(highway: String): Pair<Int, Float> = when (highway) 
     else                        -> Color.parseColor("#C9C9C9") to 2f
 }
 
-// ---------- Location overlay ----------
-
-class MyLocationOverlay(context: Context, mapView: MapView) : MyLocationNewOverlay(GpsMyLocationProvider(context), mapView) {
-
-    init {
-        setDrawAccuracyEnabled(true)
-    }
+class MyLocationOverlay(context: Context, mapView: MapView) :
+    MyLocationNewOverlay(GpsMyLocationProvider(context), mapView) {
+    init { setDrawAccuracyEnabled(true) }
 
     fun update(lat: Double, lon: Double, bearingDeg: Float) {
         val loc = Location("manual").apply {
@@ -94,15 +97,8 @@ class MyLocationOverlay(context: Context, mapView: MapView) : MyLocationNewOverl
     }
 }
 
-// ---------- Route markers overlay ----------
-
 class RouteMarkersOverlay(private val mapView: MapView) : Overlay() {
-
-    data class MarkerInfo(
-        val position: GeoPoint,
-        val color: Int,
-        val label: String
-    )
+    data class MarkerInfo(val position: GeoPoint, val color: Int, val label: String)
 
     private var startMarker: MarkerInfo? = null
     private var destMarker: MarkerInfo? = null
@@ -171,8 +167,6 @@ class RouteMarkersOverlay(private val mapView: MapView) : Overlay() {
     }
 }
 
-// ---------- MapScreen composable ----------
-
 @Composable
 fun MapScreen(
     modifier: Modifier = Modifier,
@@ -185,9 +179,9 @@ fun MapScreen(
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
 
-    val tileProvider = remember { MbtilesTileProvider.create(context) }
+    // ---------- FIX #1: use the blank vector-only tile provider ----------
+    val tileProvider = remember { BlankTileProvider.create(context) }
 
-    // State holders for mapView + overlays so we can update them after creation
     val mapViewRef = remember { mutableStateOf<MapView?>(null) }
     val routeMarkersRef = remember { mutableStateOf<RouteMarkersOverlay?>(null) }
     val locationOverlayRef = remember { mutableStateOf<MyLocationOverlay?>(null) }
@@ -195,45 +189,38 @@ fun MapScreen(
     AndroidView(
         modifier = modifier.fillMaxSize(),
         factory = { ctx ->
-            try {
-                MapView(ctx, tileProvider).apply {
-                    setBackgroundColor(Color.BLACK)
-                    setUseDataConnection(false)
-                    setMultiTouchControls(true)
-                    minZoomLevel = MIN_ZOOM
-                    maxZoomLevel = MAX_ZOOM
-                    controller.setZoom(INITIAL_ZOOM)
-                    controller.setCenter(TEHRAN_CENTER)
+            MapView(ctx, tileProvider).apply {
+                // ---------- FIX #2: light background, not black ----------
+                setBackgroundColor(MAP_BG_COLOR)
+                setUseDataConnection(false)
+                setMultiTouchControls(true)
+                minZoomLevel = MIN_ZOOM
+                maxZoomLevel = MAX_ZOOM
+                controller.setZoom(INITIAL_ZOOM)
+                controller.setCenter(TEHRAN_CENTER)
 
-                    val tapReceiver = object : MapEventsReceiver {
-                        override fun singleTapConfirmedHelper(p: GeoPoint): Boolean {
-                            onMapTap(p.latitude, p.longitude)
-                            return true
-                        }
-                        override fun longPressHelper(p: GeoPoint): Boolean = false
+                val tapReceiver = object : MapEventsReceiver {
+                    override fun singleTapConfirmedHelper(p: GeoPoint): Boolean {
+                        onMapTap(p.latitude, p.longitude)
+                        return true
                     }
-                    overlays.add(MapEventsOverlay(tapReceiver))
-                    overlays.add(CompassOverlay(ctx, this))
-
-                    // Create and attach overlays
-                    val locOverlay = MyLocationOverlay(ctx, this)
-                    locationOverlayRef.value = locOverlay
-                    overlays.add(locOverlay)
-
-                    val routeOverlay = RouteMarkersOverlay(this)
-                    routeMarkersRef.value = routeOverlay
-                    overlays.add(routeOverlay)
-
-                    // Store mapView reference for lifecycle + OSM loading
-                    mapViewRef.value = this
+                    override fun longPressHelper(p: GeoPoint): Boolean = false
                 }
-            } catch (e: Exception) {
-                Log.e("MapScreen", "FATAL: MapView creation failed", e)
-                throw e
+                overlays.add(MapEventsOverlay(tapReceiver))
+                overlays.add(CompassOverlay(ctx, this))
+
+                val locOverlay = MyLocationOverlay(ctx, this)
+                locationOverlayRef.value = locOverlay
+                overlays.add(locOverlay)
+
+                val routeOverlay = RouteMarkersOverlay(this)
+                routeMarkersRef.value = routeOverlay
+                overlays.add(routeOverlay)
+
+                mapViewRef.value = this
             }
         },
         update = { mapView ->
-            // Update route markers + location whenever Compose state changes
             routeMarkersRef.value?.update(start, dest, route)
             locationOverlayRef.value?.let { locOverlay ->
                 currentPosition?.let { pos ->
@@ -246,7 +233,6 @@ fun MapScreen(
         }
     )
 
-    // Lifecycle: onResume / onPause
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
@@ -269,70 +255,77 @@ fun MapScreen(
         }
     }
 
-    // Load OSM vector data from assets and draw overlays
     LaunchedEffect(Unit) {
-        withContext(Dispatchers.IO) {
+        val data = withContext(Dispatchers.IO) {
             try {
-                val osmData = OsmXmlParser.parseFromAssets(context, OSM_FILE_NAME)
-                Log.d("MapScreen", "OSM data loaded: ${osmData.water.size} water, ${osmData.buildings.size} buildings, ${osmData.roads.size} roads")
-                withContext(Dispatchers.Main) {
-                    mapViewRef.value?.let { mv ->
-                        drawOsmOverlays(mv, osmData)
-                        mv.invalidate()
-                    }
-                }
+                OsmXmlParser.parseFromAssets(context, OSM_FILE_NAME)
             } catch (e: Exception) {
-                Log.e("MapScreen", "Failed to load OSM data: ${e.message}", e)
+                Log.e("MapScreen", "OSM load failed", e)
+                null
             }
+        }
+        if (data == null) {
+            Log.e("MapScreen", "OSM data is null — check assets/$OSM_FILE_NAME exists")
+            return@LaunchedEffect
+        }
+        Log.d("MapScreen",
+            "OSM loaded: ${data.water.size} water, ${data.buildings.size} buildings, ${data.roads.size} roads")
+        mapViewRef.value?.let { mv ->
+            drawOsmOverlays(mv, data)
+            mv.invalidate()
         }
     }
 }
 
-// ---------- OSM overlay drawing ----------
-
+// ---------- FIX #3: draw roads first so they aren't starved by point budget ----------
 private fun drawOsmOverlays(mapView: MapView, data: OsmXmlParser.ParseResult) {
     var totalPoints = 0L
     val zoom = mapView.getZoomLevelDouble()
 
-    Log.d("MapScreen", "Drawing OSM overlays at zoom=$zoom, water=${data.water.size}, buildings=${data.buildings.size}, roads=${data.roads.size}")
+    Log.d("MapScreen",
+        "Drawing overlays at zoom=$zoom water=${data.water.size} buildings=${data.buildings.size} roads=${data.roads.size}")
 
+    // 1) Roads — always draw at any zoom.
+    for (road in data.roads) {
+        if (totalPoints + road.points.size > MAX_OSM_POINTS) {
+            Log.w("MapScreen", "Point budget reached while drawing roads")
+            break
+        }
+        if (road.highway !in ROAD_HIGHWAYS) continue
+        val (color, width) = styleForHighway(road.highway)
+        val line = Polyline(mapView).apply {
+            setPoints(road.points)
+            getOutlinePaint().color = color
+            getOutlinePaint().strokeWidth = width
+        }
+        mapView.overlays.add(line)
+        totalPoints += road.points.size
+    }
+
+    // 2) Water — draw before buildings.
     for (area in data.water) {
         if (totalPoints + area.points.size > MAX_OSM_POINTS) break
         val poly = Polygon(mapView).apply {
             setPoints(area.points)
-            getFillPaint().setColor(Color.parseColor("#AAD3DF"))
-            getOutlinePaint().setColor(Color.parseColor("#AAD3DF"))
+            getFillPaint().color = WATER_COLOR
+            getOutlinePaint().color = WATER_COLOR
             getOutlinePaint().strokeWidth = 1f
         }
         mapView.overlays.add(poly)
         totalPoints += area.points.size
     }
 
+    // 3) Buildings last.
     for (area in data.buildings) {
         if (totalPoints + area.points.size > MAX_OSM_POINTS) break
         val poly = Polygon(mapView).apply {
             setPoints(area.points)
-            getFillPaint().setColor(Color.parseColor("#D9CFC4"))
-            getOutlinePaint().setColor(Color.parseColor("#D9CFC4"))
+            getFillPaint().color = BUILDING_COLOR
+            getOutlinePaint().color = BUILDING_COLOR
             getOutlinePaint().strokeWidth = 1f
         }
         mapView.overlays.add(poly)
         totalPoints += area.points.size
-    }
-
-    if (zoom < 16.0) {
-        for (road in data.roads) {
-            if (totalPoints + road.points.size > MAX_OSM_POINTS) break
-            if (road.highway !in ROAD_HIGHWAYS) continue
-            val (color, width) = styleForHighway(road.highway)
-            val line = Polyline(mapView).apply {
-                setPoints(road.points)
-                getOutlinePaint().color = color
-                getOutlinePaint().strokeWidth = width
-            }
-            mapView.overlays.add(line)
-            totalPoints += road.points.size
-        }
     }
 
     Log.d("MapScreen", "Total OSM points drawn: $totalPoints")

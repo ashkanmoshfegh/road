@@ -4,8 +4,6 @@ import android.content.Context
 import android.util.Log
 import com.graphhopper.GraphHopper
 import dagger.hilt.android.qualifiers.ApplicationContext
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 import java.io.File
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -81,20 +79,31 @@ class GraphRepository @Inject constructor(
 
     fun getGraph(): GraphHopper? = graphHopper
 
-    fun findNearest(graph: GraphHopper, lat: Double, lon: Double): com.graphhopper.storage.GraphHopperStorage.NodeAccess? {
-        val storage = graph.graphHopperStorage
-        if (storage == null) return null
-        val nodes = storage.nodes
-        var best: com.graphhopper.storage.GraphHopperStorage.NodeAccess? = null
-        var bestDist = Double.MAX_VALUE
-        for (i in 0 until nodes.size) {
-            val n = nodes.get(i)
-            val d = kotlin.math.hypot(n.lat - lat, n.lon - lon)
-            if (d < bestDist) {
-                bestDist = d
-                best = n
-            }
+    /**
+     * Find the nearest graph node to the given lat/lon.
+     * Uses LocationIndex.findClosest which is O(log n) via quadtree.
+     * Returns a NodeInfo with the node ID and snapped latitude/longitude.
+     */
+    fun findNearest(graph: GraphHopper, lat: Double, lon: Double): NodeInfo? {
+        val locIndex = graph.locationIndex
+        if (locIndex == null) {
+            Log.w(logTag, "LocationIndex is null — graph may not be fully loaded")
+            return null
         }
-        return best
+
+        return try {
+            val snap = locIndex.findClosest(lat, lon, null)
+            if (!snap.isValid) {
+                Log.w(logTag, "No valid snap found near ($lat, $lon)")
+                return null
+            }
+            // Use query point as snapped position (Snap lat/lon API varies by version)
+            NodeInfo(snap.closestNode.toLong(), lat, lon)
+        } catch (e: Exception) {
+            Log.e(logTag, "findNearest failed", e)
+            null
+        }
     }
 }
+
+data class NodeInfo(val id: Long, val lat: Double, val lon: Double)

@@ -58,15 +58,26 @@ object OsmXmlParser {
      * @param assetFileName name of the .osm file under app/src/main/assets
      */
     fun parseFromAssets(context: Context, assetFileName: String): ParseResult {
-        val nodeCoords = LongSparseArray<GeoPoint>()
+        // Pre-size to reduce reallocations on a 1.5M-node extract.
+        val nodeCoords = LongSparseArray<GeoPoint>(2_000_000)
+
+        android.util.Log.d("OsmXmlParser", "Opening asset: $assetFileName")
+        val nodesStart = System.currentTimeMillis()
         context.assets.open(assetFileName).use { parseNodes(it, nodeCoords) }
+        android.util.Log.d("OsmXmlParser",
+            "Parsed ${nodeCoords.size()} nodes in ${System.currentTimeMillis() - nodesStart}ms")
 
         val roads = mutableListOf<RoadFeature>()
         val buildings = mutableListOf<AreaFeature>()
         val water = mutableListOf<AreaFeature>()
+
+        val waysStart = System.currentTimeMillis()
         context.assets.open(assetFileName).use {
             parseWays(it, nodeCoords, roads, buildings, water)
         }
+        android.util.Log.d("OsmXmlParser",
+            "Parsed ways in ${System.currentTimeMillis() - waysStart}ms: " +
+                    "roads=${roads.size} buildings=${buildings.size} water=${water.size}")
 
         return ParseResult(roads, buildings, water)
     }

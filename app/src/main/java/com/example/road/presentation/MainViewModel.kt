@@ -11,16 +11,14 @@ import com.example.road.domain.resilience.ResilienceManager
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
-import org.osmdroid.util.GeoPoint
 import javax.inject.Inject
-import javax.inject.Singleton
 
 @HiltViewModel
-@Singleton
 class MainViewModel @Inject constructor(
     application: Application,
     private val graphRepository: GraphRepository,
     private val routeCalculator: RouteCalculator,
+    private val resilienceManager: ResilienceManager,
 ) : AndroidViewModel(application) {
 
     private val _graphReady = MutableStateFlow(false)
@@ -48,27 +46,41 @@ class MainViewModel @Inject constructor(
     private var destNodeId: Long? = null
 
     init {
-        Log.d("MainViewModel", "created")
-        loadGraphFlow()
+        Log.d("MainViewModel", "created, starting graph load")
+        viewModelScope.launch {
+            val ok = resilienceManager.initialize()
+            if (!ok) {
+                _routeError.value = "Graph load failed — check Logcat for GraphHopper errors"
+            }
+        }
+        loadGraphPoll()
+        observePosition()
     }
 
-    private fun loadGraphFlow() {
+    private fun loadGraphPoll() {
         viewModelScope.launch {
-            // Poll: wait for graphRepository.loadGraph() to complete
-            var attempts = 0
-            while (attempts < 180 && _graphReady.value == false) {
+            var elapsed = 0L
+            while (elapsed < 180_000 && !_graphReady.value) {
                 val gh = graphRepository.getGraph()
                 if (gh != null) {
                     _graphReady.value = true
-                    Log.d("MainViewModel", "Graph ready after ${attempts}s")
+                    Log.d("MainViewModel", "Graph ready after ${elapsed / 1000}s")
                     break
                 }
                 delay(1000)
-                attempts++
+                elapsed += 1000
             }
-            if (_graphReady.value == false) {
-                Log.w("MainViewModel", "Graph not ready after 180s")
+            if (!_graphReady.value) {
+                Log.w("MainViewModel", "Graph timeout after 180s")
                 _routeError.value = "Map data is taking longer than expected. Tap Retry to try again."
+            }
+        }
+    }
+
+    private fun observePosition() {
+        viewModelScope.launch {
+            resilienceManager.currentPosition.collect { pos ->
+                _currentPosition.value = pos
             }
         }
     }
@@ -76,58 +88,63 @@ class MainViewModel @Inject constructor(
     fun retryLoadGraph() {
         _graphReady.value = false
         _routeError.value = null
-        Log.d("MainViewModel", "Retrying graph load")
-        graphRepository.loadGraph()
-        loadGraphFlow()
+        _instruction.value = "Retrying map load..."
+        Log.d("MainViewModel", "Retry: reloading graph")
+        viewModelScope.launch {
+            val ok = resilienceManager.initialize()
+            if (!ok) {
+                _routeError.value = "Retry failed — check Logcat"
+            }
+        }
+        loadGraphPoll()
     }
 
     fun onMapTap(lat: Double, lon: Double) {
-        Log.d("MainViewModel", "onMapTap: lat=$lat lon=$lon")
+        Log.d("MainViewModel", "Tap: ($lat, $lon) graphReady=${_graphReady.value}")
+
         if (!_graphReady.value) {
-            _routeError.value = "Map data not ready yet — please wait"
+            _routeError.value = "Map data not ready — please wait"
             return
         }
 
-        val graph = graphRepository.getGraph()
-        if (graph == null) {
+        val graph = graphRepository.getGraph() ?: run {
             _routeError.value = "Graph not available"
             return
         }
 
         val node = graphRepository.findNearest(graph, lat, lon) ?: return
-        Log.d("MainViewModel", "Nearest node: id=${node.id} lat=${node.lat} lon=${node.lon}")
+        Log.d("MainViewModel", "Nearest node: ${node.id} at (${node.lat}, ${node.lon})")
 
-        // After destination is set, tapping resets AND sets new start
+        // 3-state tap machine: start → dest → reset+newStart
         when {
             startNodeId == null && destNodeId == null -> {
-                // Place start
                 startNodeId = node.id
                 _startPosition.value = Position(lat, lon)
                 _instruction.value = "Tap map: set DESTINATION"
                 Log.d("MainViewModel", "Start set: node=${node.id}")
             }
             startNodeId != null && destNodeId == null -> {
-                // Place destination
                 destNodeId = node.id
                 _destPosition.value = Position(lat, lon)
                 _instruction.value = "Route shown. Tap map or Reset to start over"
                 Log.d("MainViewModel", "Dest set: node=${node.id}")
             }
             else -> {
-                // Reset + set new start
+                // Reset and place new start
                 startNodeId = node.id
                 destNodeId = null
                 _startPosition.value = Position(lat, lon)
                 _destPosition.value = null
                 _route.value = emptyList()
                 _instruction.value = "Tap map: set DESTINATION"
-                Log.d("MainViewModel", "Reset & new start: node=${node.id}")
+                Log.d("MainViewModel", "Reset + new start: node=${node.id}")
             }
         }
     }
 
     fun calculateRoute() {
-        Log.d("MainViewModel", "calculateRoute startNodeId=$startNodeId destNodeId=$destNodeId")
+        Log.d("MainViewModel", "calculateRoute start=$startNodeId dest=$destNodeId")
+
         if (!_graphReady.value) {
             _routeError.value = "Map data not ready"
             return
@@ -142,31 +159,28 @@ class MainViewModel @Inject constructor(
             return
         }
 
-        val startNode = graphRepository.findNearest(graph, _startPosition.value?.latitude ?: return, _startPosition.value?.longitude ?: return)
-        val destNode  = graphRepository.findNearest(graph, _destPosition.value?.latitude ?: return, _destPosition.value?.longitude ?: return)
+        val startPos = _startPosition.value ?: return
+        val destPos  = _destPosition.value ?: return
 
-        if (startNode == null || destNode == null) {
-            _routeError.value = "Could not find route nodes"
-            return
-        }
-
-        // Use RouteCalculator for shortest path via graph
-        val path = try {
-            routeCalculator.calculateRoute(startNode, destNode)
+        val ghPoints = try {
+            routeCalculator.calculateRoute(startPos, destPos)
         } catch (e: Exception) {
-            Log.e("MainViewModel", "Route calculation failed", e)
+            Log.e("MainViewModel", "Route calc failed", e)
             _routeError.value = "Route calculation failed: ${e.message}"
             return
         }
 
-        if (path.isEmpty()) {
+        if (ghPoints.isEmpty()) {
             _routeError.value = "No route found between these points"
+            Log.w("MainViewModel", "No route found")
             return
         }
 
-        _route.value = path.map { Position(it.lat, it.lon) }
+        _route.value = ghPoints.map { ghp ->
+            Position(latitude = ghp.lat, longitude = ghp.lon)
+        }
         _instruction.value = "Route shown. Tap map or Reset to start over"
-        Log.d("MainViewModel", "Route computed: ${path.size} points")
+        Log.d("MainViewModel", "Route: ${ghPoints.size} points")
     }
 
     fun resetAll() {
@@ -177,16 +191,18 @@ class MainViewModel @Inject constructor(
         _route.value = emptyList()
         _instruction.value = "Tap map: set START"
         _routeError.value = null
-        Log.d("MainViewModel", "Reset complete")
+        Log.d("MainViewModel", "Reset")
     }
 
     fun startSimulation() {
-        Log.d("MainViewModel", "startSimulation called")
-        // INS/simulation not yet wired — placeholder
+        Log.d("MainViewModel", "startSimulation — not yet implemented")
     }
 
-    override fun onCleared() {
-        super.onCleared()
-        Log.d("MainViewModel", "cleared")
+    fun startSensors() {
+        resilienceManager.startSensors()
+    }
+
+    fun stopSensors() {
+        resilienceManager.stopSensors()
     }
 }

@@ -24,6 +24,8 @@ android {
     androidResources {
         noCompress += "mbtiles"
         noCompress += "json"
+        noCompress += "osm"        // <-- ADD
+        noCompress += "osm.pbf"    // <-- ADD (GraphRepository uses iran-260828.osm.pbf)
     }
 
     packaging {
