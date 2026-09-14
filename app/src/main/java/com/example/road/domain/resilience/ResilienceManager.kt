@@ -6,9 +6,8 @@ import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
-import android.location.Location
-import android.location.LocationListener
-import android.location.LocationManager
+import android.os.Handler
+import android.os.HandlerThread
 import android.util.Log
 import com.example.road.data.m.local.repository.GraphRepository
 import com.example.road.data.m.model.Position
@@ -27,6 +26,19 @@ import kotlin.math.sqrt
 import javax.inject.Inject
 import javax.inject.Singleton
 
+/**
+ * Tracks the device's position using ONLY onboard sensors — accelerometer +
+ * gyroscope dead-reckoning — starting from a fixed point the user taps on
+ * the map (their "I am here" tap). GPS/LocationManager is deliberately never
+ * used anywhere in this class.
+ *
+ * Because there's no GPS to periodically re-anchor against, all displacement
+ * is measured relative to [originPosition], which is set exactly once per
+ * "session" via [setInitialPosition] and never moved afterward. This means
+ * position will drift over time/distance — that's an inherent limitation of
+ * sensor-only dead reckoning, not a bug — [MapMatcher] snapping to road
+ * geometry is what keeps the drift from looking obviously wrong on screen.
+ */
 @Singleton
 class ResilienceManager @Inject constructor(
     @ApplicationContext private val context: Context,
@@ -37,48 +49,33 @@ class ResilienceManager @Inject constructor(
     private val _currentPosition = MutableStateFlow<Position?>(null)
     val currentPosition: StateFlow<Position?> = _currentPosition.asStateFlow()
 
-    private val _currentSource = MutableStateFlow<String>("INS")
-    val currentSource: StateFlow<String> = _currentSource.asStateFlow()
-
-    // INS state
     private val sensorFusion = SensorFusion()
     private var mapMatcher: MapMatcher? = null
     private var routeCalculator: RouteCalculator? = null
 
-    // GPS anchor — last good GPS fix used to correct INS drift
-    private var gpsAnchor: Position? = null
-    private var lastGpsTime = 0L
+    // Fixed dead-reckoning origin. Set once by setInitialPosition() when the
+    // user taps their starting point; never updated afterward.
+    private var originPosition: Position? = null
 
-    // Sensor data
     private var latestAccel = FloatArray(3)
     private var latestGyro = FloatArray(3)
     private var hasAccel = false
     private var hasGyro = false
-
-    // Whether sensors are registered
     private var sensorsActive = false
 
-    // GPS location listener (held so we can remove updates)
-    private var _gpsLocationListener: LocationListener? = null
+    // Sensor callbacks run here, off the main thread — map-matching against
+    // ~169K edges is too heavy to do on Dispatchers.Main.
+    private val sensorThread = HandlerThread("ResilienceSensorThread").apply { start() }
+    private val sensorHandler = Handler(sensorThread.looper)
 
-    // Convenience property so outer code can access it if needed
-    val gpsLocationListener: LocationListener
-        get() = _gpsLocationListener!!
-
-    init {
-        _gpsLocationListener = object : LocationListener {
-            override fun onLocationChanged(location: Location) {
-                onGpsLocation(location)
-            }
-            override fun onProviderDisabled(provider: String) {}
-            override fun onProviderEnabled(provider: String) {}
-            override fun onStatusChanged(provider: String, status: Int, extras: android.os.Bundle?) {}
-        }
-    }
+    // Only run the expensive map-matching scan this often; displacement is
+    // still integrated on every sensor sample regardless.
+    private val minMatchIntervalMs = 150L
+    private var lastMatchTime = 0L
 
     suspend fun initialize(): Boolean {
-            Log.d("ResilienceManager", "initialize() called")
-            return try {
+        Log.d("ResilienceManager", "initialize() called")
+        return try {
             val gh = graphRepository.loadGraph()
             if (gh == null) {
                 Log.e("ResilienceManager", "GraphHopper failed to load — routing will not work")
@@ -86,13 +83,12 @@ class ResilienceManager @Inject constructor(
             } else {
                 Log.d("ResilienceManager", "GraphHopper loaded successfully")
                 routeCalculator = RouteCalculator(graphRepository)
-                // Defer the heavy 57MB JSON parse (GraphLoader) + MapMatcher construction
-                // to a background coroutine so it doesn't block the main thread.
                 CoroutineScope(Dispatchers.IO).launch {
                     try {
                         val (nodes, edges) = GraphLoader.loadGraph(context, "graph.json")
+                        val matcher = MapMatcher(edges, nodes)
                         withContext(Dispatchers.Main) {
-                            mapMatcher = MapMatcher(edges, nodes)
+                            mapMatcher = matcher
                             Log.d("ResilienceManager", "MapMatcher initialized with ${nodes.size} nodes, ${edges.size} edges")
                         }
                     } catch (e: Exception) {
@@ -107,104 +103,72 @@ class ResilienceManager @Inject constructor(
         }
     }
 
-    // ---------- GPS callback (feeds anchor for INS correction) ----------
-
-    fun onGpsLocation(location: Location) {
-        val pos = Position(
-            latitude = location.latitude,
-            longitude = location.longitude,
-            bearing = location.bearing,
-            accuracy = location.accuracy,
-            timestamp = location.time
-        )
-
-        // Always update GPS anchor — INS will correct toward it
-        gpsAnchor = pos
-        lastGpsTime = location.time
-
-        // If GPS is accurate (< 20m), use it as the primary position
-        // and reset the INS to avoid drift accumulation
-        if (location.accuracy < 20f && location.hasBearing()) {
-            _currentPosition.value = pos
-            _currentSource.value = "GPS"
-            sensorFusion.reset(location.bearing)
-            // Reset INS displacement relative to this GPS anchor
-            return
-        }
-
-        // GPS is available but not accurate enough — INS provides the position,
-        // GPS anchor is used for periodic correction (done in onSensorChanged)
-        if (_currentPosition.value == null) {
-            // No position yet — use GPS as initial anchor
-            _currentPosition.value = pos
-            sensorFusion.reset(location.bearing)
-        }
+    /**
+     * Call when the user taps the map to mark their current/starting
+     * location. This becomes the fixed origin for all subsequent
+     * sensor-based dead reckoning.
+     */
+    fun setInitialPosition(lat: Double, lon: Double, bearingDeg: Float = 0f) {
+        val pos = Position(latitude = lat, longitude = lon, bearing = bearingDeg, accuracy = 0f)
+        originPosition = pos
+        _currentPosition.value = pos
+        sensorFusion.reset(bearingDeg)
+        lastMatchTime = 0L
+        Log.d("ResilienceManager", "Initial position set: ($lat, $lon)")
     }
 
-    // ---------- Sensor callback (INS dead-reckoning) ----------
+    /** Call on Reset — stops drawing/tracking a position until the next tap. */
+    fun clearPosition() {
+        originPosition = null
+        _currentPosition.value = null
+        sensorFusion.reset()
+    }
 
+    // Runs on sensorThread (see startSensors()), not the main thread.
     override fun onSensorChanged(event: SensorEvent?) {
         event ?: return
         when (event.sensor.type) {
-            Sensor.TYPE_ACCELEROMETER -> {
-                latestAccel = event.values.clone()
-                hasAccel = true
-            }
-            Sensor.TYPE_GYROSCOPE -> {
-                latestGyro = event.values.clone()
-                hasGyro = true
-            }
+            Sensor.TYPE_ACCELEROMETER -> { latestAccel = event.values.clone(); hasAccel = true }
+            Sensor.TYPE_GYROSCOPE -> { latestGyro = event.values.clone(); hasGyro = true }
         }
 
         if (!sensorsActive || !hasAccel || !hasGyro) return
+        val origin = originPosition ?: return // no start point tapped yet — nothing to track from
 
         val gyroZ = latestGyro[2]
-        val accelMag = sqrt(latestAccel[0] * latestAccel[0] +
-                latestAccel[1] * latestAccel[1] +
-                latestAccel[2] * latestAccel[2])
+        val accelMag = sqrt(
+            latestAccel[0] * latestAccel[0] +
+                    latestAccel[1] * latestAccel[1] +
+                    latestAccel[2] * latestAccel[2]
+        )
         val currentTime = System.currentTimeMillis()
 
-        val displacement = sensorFusion.update(gyroZ, accelMag, currentTime)
-        displacement?.let { (dx, dy) ->
-            // Start from GPS anchor if available, otherwise from last position
-            val base = gpsAnchor ?: _currentPosition.value ?: return@let
+        val displacement = sensorFusion.update(gyroZ, accelMag, currentTime) ?: return
+        val (dx, dy) = displacement
 
-            val newLat = base.latitude + dx / 111320.0
-            val newLon = base.longitude +
-                    dy / (111320.0 * kotlin.math.cos(Math.toRadians(base.latitude)))
+        val newLat = origin.latitude + dx / 111320.0
+        val newLon = origin.longitude +
+                dy / (111320.0 * kotlin.math.cos(Math.toRadians(origin.latitude)))
 
-            var newPos = Position(
-                latitude = newLat,
-                longitude = newLon,
-                bearing = sensorFusion.getHeadingDegrees(),
-                timestamp = currentTime
-            )
+        val rawPos = Position(
+            latitude = newLat,
+            longitude = newLon,
+            bearing = sensorFusion.getHeadingDegrees(),
+            timestamp = currentTime
+        )
 
-            // Apply map matching to snap to roads
-            val matched = mapMatcher?.match(newPos) ?: newPos
-
-            // Periodically correct toward GPS anchor (every 5 seconds or if GPS is recent)
-            if (gpsAnchor != null && (currentTime - lastGpsTime) < 5000L) {
-                // Gentle correction: move 10% toward GPS anchor each update
-                val corrFactor = 0.1
-                val corrLat = matched.latitude + (gpsAnchor!!.latitude - matched.latitude) * corrFactor
-                val corrLon = matched.longitude + (gpsAnchor!!.longitude - matched.longitude) * corrFactor
-                newPos = Position(
-                    latitude = corrLat,
-                    longitude = corrLon,
-                    bearing = matched.bearing,
-                    timestamp = currentTime
-                )
-            }
-
-            _currentPosition.value = newPos
-            _currentSource.value = "INS"
+        val shouldMatch = currentTime - lastMatchTime >= minMatchIntervalMs
+        val finalPos = if (shouldMatch) {
+            lastMatchTime = currentTime
+            mapMatcher?.match(rawPos) ?: rawPos
+        } else {
+            rawPos
         }
+
+        _currentPosition.value = finalPos
     }
 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
-
-    // ---------- Sensor lifecycle ----------
 
     @SuppressLint("MissingPermission")
     fun startSensors() {
@@ -212,74 +176,29 @@ class ResilienceManager @Inject constructor(
         sensorsActive = true
 
         val sensorManager = context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
-
         val accelerometer = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
         val gyroscope = sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE)
 
-        // Use SENSOR_DELAY_GAME (20ms) for smoother, more frequent updates
         if (accelerometer != null) {
-            sensorManager.registerListener(this, accelerometer, SensorManager.SENSOR_DELAY_GAME)
+            sensorManager.registerListener(this, accelerometer, SensorManager.SENSOR_DELAY_GAME, sensorHandler)
         }
         if (gyroscope != null) {
-            sensorManager.registerListener(this, gyroscope, SensorManager.SENSOR_DELAY_GAME)
+            sensorManager.registerListener(this, gyroscope, SensorManager.SENSOR_DELAY_GAME, sensorHandler)
         }
-
-        // Also register GPS listener — GPS feeds the anchor for INS correction
-        try {
-            val locationManager = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
-            val listener = _gpsLocationListener ?: return
-            if (locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
-                locationManager.requestLocationUpdates(
-                    LocationManager.GPS_PROVIDER,
-                    1000L,  // 1 second interval
-                    1f,     // 1 meter movement
-                    listener
-                )
-            }
-            // Also try network provider for faster initial fix
-            if (locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) {
-                locationManager.requestLocationUpdates(
-                    LocationManager.NETWORK_PROVIDER,
-                    1000L,
-                    1f,
-                    listener
-                )
-            }
-        } catch (e: SecurityException) {
-            e.printStackTrace()
-        }
+        // No GPS/LocationManager registration — positioning is sensor-only,
+        // by design.
     }
 
-    @SuppressLint("MissingPermission")
     fun stopSensors() {
         sensorsActive = false
         val sensorManager = context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
         sensorManager.unregisterListener(this)
-        try {
-            val locationManager = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
-            _gpsLocationListener?.let { locationManager.removeUpdates(it) }
-        } catch (e: SecurityException) {
-            e.printStackTrace()
-        }
     }
-
-    // ---------- Routing (existing) ----------
 
     fun getRoute(destination: Position): List<Position> {
         val from = _currentPosition.value ?: return emptyList()
         val calculator = routeCalculator ?: return emptyList()
         val path = calculator.calculateRoute(from, destination)
         return path.map { Position(it.lat, it.lon, bearing = 0f) }
-    }
-
-    fun simulateGpsLocation(lat: Double, lon: Double, bearing: Float) {
-        val loc = Location("simulated").apply {
-            this.latitude = lat
-            this.longitude = lon
-            this.bearing = bearing
-            this.accuracy = 5f
-            this.time = System.currentTimeMillis()
-        }
-        onGpsLocation(loc)
     }
 }

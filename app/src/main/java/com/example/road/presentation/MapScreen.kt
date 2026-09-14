@@ -6,7 +6,6 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.Typeface
-import android.location.Location
 import android.util.Log
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
@@ -31,20 +30,18 @@ import org.osmdroid.views.MapView
 import org.osmdroid.views.Projection
 import org.osmdroid.views.overlay.*
 import org.osmdroid.views.overlay.compass.CompassOverlay
-import org.osmdroid.views.overlay.mylocation.GpsMyLocationProvider
-import org.osmdroid.views.overlay.mylocation.MyLocationNewOverlay
 
 private val TEHRAN_CENTER = GeoPoint(35.6892, 51.3890)
 private const val MIN_ZOOM = 8.0
 private const val MAX_ZOOM = 21.0
 private const val INITIAL_ZOOM = 13.0
 
-// MUST match an actual file in app/src/main/assets/
-private const val OSM_FILE_NAME = "tehran-map.osm"
+private const val OSM_FILE_NAME = "tehran-map.osm.stripped"
 
-private val START_MARKER_COLOR = Color.parseColor("#2E7D32")
-private val DEST_MARKER_COLOR  = Color.parseColor("#C62828")
-private val ROUTE_LINE_COLOR   = Color.parseColor("#FFD600")
+private val START_MARKER_COLOR   = Color.parseColor("#2E7D32")
+private val DEST_MARKER_COLOR    = Color.parseColor("#C62828")
+private val ROUTE_LINE_COLOR     = Color.parseColor("#FFD600")
+private val CURRENT_POS_COLOR    = Color.parseColor("#1565C0")
 
 private val MAP_BG_COLOR       = Color.parseColor("#F2EFE9")
 private val WATER_COLOR        = Color.parseColor("#AAD3DF")
@@ -60,9 +57,6 @@ private val ROAD_HIGHWAYS = setOf(
     "service", "track", "road"
 )
 
-// Total vertex budget across *all* overlays. Raise if your device has RAM.
-private const val MAX_OSM_POINTS = 1_500_000
-
 private fun styleForHighway(highway: String): Pair<Int, Float> = when (highway) {
     "motorway", "motorway_link" -> Color.parseColor("#E8622C") to 7f
     "trunk", "trunk_link"       -> Color.parseColor("#EA8B4B") to 6f
@@ -75,25 +69,63 @@ private fun styleForHighway(highway: String): Pair<Int, Float> = when (highway) 
     else                        -> Color.parseColor("#C9C9C9") to 2f
 }
 
-class MyLocationOverlay(context: Context, mapView: MapView) :
-    MyLocationNewOverlay(GpsMyLocationProvider(context), mapView) {
-    init { setDrawAccuracyEnabled(true) }
+/**
+ * Draws the user's current sensor-estimated position as a dot + heading
+ * arrow. Deliberately NOT based on osmdroid's MyLocationNewOverlay /
+ * GpsMyLocationProvider — that class pulls real device GPS internally,
+ * which was overwriting/fighting with the sensor-based position and made
+ * the marker appear in the wrong place. This overlay only ever draws
+ * whatever Position is fed to it via update().
+ */
+class CurrentPositionOverlay(private val mapView: MapView) : Overlay() {
+    private var position: GeoPoint? = null
+    private var bearingDeg: Float = 0f
 
-    fun update(lat: Double, lon: Double, bearingDeg: Float) {
-        val loc = Location("manual").apply {
-            longitude = lon
-            latitude = lat
-            accuracy = 2f
-            altitude = 0.0
-        }
-        loc.bearing = bearingDeg
-        setLocation(loc)
-        mMapView.invalidate()
+    private val haloPaint = Paint().apply {
+        color = Color.WHITE
+        style = Paint.Style.FILL
+        isAntiAlias = true
+    }
+    private val dotPaint = Paint().apply {
+        color = CURRENT_POS_COLOR
+        style = Paint.Style.FILL
+        isAntiAlias = true
+    }
+    private val arrowPaint = Paint().apply {
+        color = Color.WHITE
+        style = Paint.Style.FILL
+        isAntiAlias = true
+    }
+
+    fun update(lat: Double, lon: Double, bearing: Float) {
+        position = GeoPoint(lat, lon)
+        bearingDeg = bearing
+        mapView.invalidate()
+    }
+
+    fun clear() {
+        position = null
+        mapView.invalidate()
     }
 
     override fun draw(canvas: Canvas, projection: Projection) {
-        val fix = getLastFix() ?: return
-        drawMyLocation(canvas, projection, fix)
+        val pos = position ?: return
+        val px = projection.toPixels(pos, null)
+        val radius = 22f
+
+        canvas.drawCircle(px.x.toFloat(), px.y.toFloat(), radius + 5f, haloPaint)
+        canvas.drawCircle(px.x.toFloat(), px.y.toFloat(), radius, dotPaint)
+
+        canvas.save()
+        canvas.rotate(bearingDeg, px.x.toFloat(), px.y.toFloat())
+        val path = Path().apply {
+            moveTo(px.x.toFloat(), px.y.toFloat() - radius - 14f)
+            lineTo(px.x.toFloat() - 8f, px.y.toFloat() - radius + 2f)
+            lineTo(px.x.toFloat() + 8f, px.y.toFloat() - radius + 2f)
+            close()
+        }
+        canvas.drawPath(path, arrowPaint)
+        canvas.restore()
     }
 }
 
@@ -137,11 +169,6 @@ class RouteMarkersOverlay(private val mapView: MapView) : Overlay() {
     }
 
     override fun draw(canvas: Canvas, projection: Projection) {
-        if (projection == null) return
-        drawInto(canvas, projection)
-    }
-
-    private fun drawInto(canvas: Canvas, projection: Projection) {
         if (routePoints.size >= 2) {
             val first = projection.toPixels(routePoints[0], null)
             val path = Path().apply { moveTo(first.x.toFloat(), first.y.toFloat()) }
@@ -167,6 +194,113 @@ class RouteMarkersOverlay(private val mapView: MapView) : Overlay() {
     }
 }
 
+class OsmFeaturesOverlay(
+    private val roads: List<OsmXmlParser.RoadFeature>,
+    private val buildings: List<OsmXmlParser.AreaFeature>,
+    private val water: List<OsmXmlParser.AreaFeature>
+) : Overlay() {
+
+    private val waterPaint = Paint().apply {
+        color = WATER_COLOR; style = Paint.Style.FILL; isAntiAlias = true
+    }
+    private val buildingPaint = Paint().apply {
+        color = BUILDING_COLOR; style = Paint.Style.FILL; isAntiAlias = true
+    }
+    private val roadPaint = Paint().apply {
+        style = Paint.Style.STROKE
+        strokeCap = Paint.Cap.ROUND
+        strokeJoin = Paint.Join.ROUND
+        isAntiAlias = true
+    }
+
+    private data class RoadEntry(
+        val points: List<GeoPoint>, val color: Int, val width: Float,
+        val minLat: Double, val maxLat: Double, val minLon: Double, val maxLon: Double
+    )
+    private data class AreaEntry(
+        val points: List<GeoPoint>,
+        val minLat: Double, val maxLat: Double, val minLon: Double, val maxLon: Double
+    )
+
+    private val roadEntries: List<RoadEntry> = roads.mapNotNull { road ->
+        if (road.highway !in ROAD_HIGHWAYS || road.points.size < 2) return@mapNotNull null
+        val (color, width) = styleForHighway(road.highway)
+        val b = boundsOf(road.points)
+        RoadEntry(road.points, color, width, b.a, b.b, b.c, b.d)
+    }
+    private val buildingEntries: List<AreaEntry> = buildings.mapNotNull { area ->
+        if (area.points.size < 3) return@mapNotNull null
+        val b = boundsOf(area.points)
+        AreaEntry(area.points, b.a, b.b, b.c, b.d)
+    }
+    private val waterEntries: List<AreaEntry> = water.mapNotNull { area ->
+        if (area.points.size < 3) return@mapNotNull null
+        val b = boundsOf(area.points)
+        AreaEntry(area.points, b.a, b.b, b.c, b.d)
+    }
+
+    private data class Bounds4(val a: Double, val b: Double, val c: Double, val d: Double)
+    private fun boundsOf(points: List<GeoPoint>): Bounds4 {
+        var minLat = Double.MAX_VALUE; var maxLat = -Double.MAX_VALUE
+        var minLon = Double.MAX_VALUE; var maxLon = -Double.MAX_VALUE
+        for (p in points) {
+            if (p.latitude < minLat) minLat = p.latitude
+            if (p.latitude > maxLat) maxLat = p.latitude
+            if (p.longitude < minLon) minLon = p.longitude
+            if (p.longitude > maxLon) maxLon = p.longitude
+        }
+        return Bounds4(minLat, maxLat, minLon, maxLon)
+    }
+
+    override fun draw(canvas: Canvas, projection: Projection) {
+        val bbox = projection.boundingBox
+        for (entry in waterEntries) {
+            if (!intersects(entry.minLat, entry.maxLat, entry.minLon, entry.maxLon, bbox)) continue
+            drawArea(canvas, projection, entry.points, waterPaint)
+        }
+        for (entry in buildingEntries) {
+            if (!intersects(entry.minLat, entry.maxLat, entry.minLon, entry.maxLon, bbox)) continue
+            drawArea(canvas, projection, entry.points, buildingPaint)
+        }
+        for (entry in roadEntries) {
+            if (!intersects(entry.minLat, entry.maxLat, entry.minLon, entry.maxLon, bbox)) continue
+            roadPaint.color = entry.color
+            roadPaint.strokeWidth = entry.width
+            drawLine(canvas, projection, entry.points, roadPaint)
+        }
+    }
+
+    private fun intersects(
+        minLat: Double, maxLat: Double, minLon: Double, maxLon: Double,
+        bbox: org.osmdroid.util.BoundingBox
+    ): Boolean =
+        maxLat >= bbox.latSouth && minLat <= bbox.latNorth &&
+                maxLon >= bbox.lonWest && minLon <= bbox.lonEast
+
+    private fun drawArea(canvas: Canvas, projection: Projection, points: List<GeoPoint>, paint: Paint) {
+        val path = Path()
+        val first = projection.toPixels(points[0], null)
+        path.moveTo(first.x.toFloat(), first.y.toFloat())
+        for (i in 1 until points.size) {
+            val p = projection.toPixels(points[i], null)
+            path.lineTo(p.x.toFloat(), p.y.toFloat())
+        }
+        path.close()
+        canvas.drawPath(path, paint)
+    }
+
+    private fun drawLine(canvas: Canvas, projection: Projection, points: List<GeoPoint>, paint: Paint) {
+        val path = Path()
+        val first = projection.toPixels(points[0], null)
+        path.moveTo(first.x.toFloat(), first.y.toFloat())
+        for (i in 1 until points.size) {
+            val p = projection.toPixels(points[i], null)
+            path.lineTo(p.x.toFloat(), p.y.toFloat())
+        }
+        canvas.drawPath(path, paint)
+    }
+}
+
 @Composable
 fun MapScreen(
     modifier: Modifier = Modifier,
@@ -179,18 +313,16 @@ fun MapScreen(
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
 
-    // ---------- FIX #1: use the blank vector-only tile provider ----------
     val tileProvider = remember { BlankTileProvider.create(context) }
 
     val mapViewRef = remember { mutableStateOf<MapView?>(null) }
     val routeMarkersRef = remember { mutableStateOf<RouteMarkersOverlay?>(null) }
-    val locationOverlayRef = remember { mutableStateOf<MyLocationOverlay?>(null) }
+    val currentPositionRef = remember { mutableStateOf<CurrentPositionOverlay?>(null) }
 
     AndroidView(
         modifier = modifier.fillMaxSize(),
         factory = { ctx ->
             MapView(ctx, tileProvider).apply {
-                // ---------- FIX #2: light background, not black ----------
                 setBackgroundColor(MAP_BG_COLOR)
                 setUseDataConnection(false)
                 setMultiTouchControls(true)
@@ -209,9 +341,9 @@ fun MapScreen(
                 overlays.add(MapEventsOverlay(tapReceiver))
                 overlays.add(CompassOverlay(ctx, this))
 
-                val locOverlay = MyLocationOverlay(ctx, this)
-                locationOverlayRef.value = locOverlay
-                overlays.add(locOverlay)
+                val posOverlay = CurrentPositionOverlay(this)
+                currentPositionRef.value = posOverlay
+                overlays.add(posOverlay)
 
                 val routeOverlay = RouteMarkersOverlay(this)
                 routeMarkersRef.value = routeOverlay
@@ -222,12 +354,15 @@ fun MapScreen(
         },
         update = { mapView ->
             routeMarkersRef.value?.update(start, dest, route)
-            locationOverlayRef.value?.let { locOverlay ->
-                currentPosition?.let { pos ->
-                    locOverlay.update(pos.latitude, pos.longitude, pos.bearing)
+            currentPositionRef.value?.let { overlay ->
+                val pos = currentPosition
+                if (pos != null) {
+                    overlay.update(pos.latitude, pos.longitude, pos.bearing)
                     try {
                         mapView.controller.animateTo(GeoPoint(pos.latitude, pos.longitude))
                     } catch (_: Exception) {}
+                } else {
+                    overlay.clear()
                 }
             }
         }
@@ -236,14 +371,8 @@ fun MapScreen(
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
-                Lifecycle.Event.ON_RESUME -> {
-                    mapViewRef.value?.onResume()
-                    locationOverlayRef.value?.onResume()
-                }
-                Lifecycle.Event.ON_PAUSE -> {
-                    mapViewRef.value?.onPause()
-                    locationOverlayRef.value?.onPause()
-                }
+                Lifecycle.Event.ON_RESUME -> mapViewRef.value?.onResume()
+                Lifecycle.Event.ON_PAUSE -> mapViewRef.value?.onPause()
                 else -> {}
             }
         }
@@ -251,7 +380,6 @@ fun MapScreen(
         onDispose {
             lifecycleOwner.lifecycle.removeObserver(observer)
             mapViewRef.value?.onDetach()
-            locationOverlayRef.value?.onDetach(mapViewRef.value)
         }
     }
 
@@ -270,64 +398,15 @@ fun MapScreen(
         }
         Log.d("MapScreen",
             "OSM loaded: ${data.water.size} water, ${data.buildings.size} buildings, ${data.roads.size} roads")
+
+        val overlay = withContext(Dispatchers.Default) {
+            OsmFeaturesOverlay(data.roads, data.buildings, data.water)
+        }
+
         mapViewRef.value?.let { mv ->
-            drawOsmOverlays(mv, data)
+            mv.overlays.add(overlay)
             mv.invalidate()
+            Log.d("MapScreen", "OsmFeaturesOverlay attached")
         }
     }
-}
-
-// ---------- FIX #3: draw roads first so they aren't starved by point budget ----------
-private fun drawOsmOverlays(mapView: MapView, data: OsmXmlParser.ParseResult) {
-    var totalPoints = 0L
-    val zoom = mapView.getZoomLevelDouble()
-
-    Log.d("MapScreen",
-        "Drawing overlays at zoom=$zoom water=${data.water.size} buildings=${data.buildings.size} roads=${data.roads.size}")
-
-    // 1) Roads — always draw at any zoom.
-    for (road in data.roads) {
-        if (totalPoints + road.points.size > MAX_OSM_POINTS) {
-            Log.w("MapScreen", "Point budget reached while drawing roads")
-            break
-        }
-        if (road.highway !in ROAD_HIGHWAYS) continue
-        val (color, width) = styleForHighway(road.highway)
-        val line = Polyline(mapView).apply {
-            setPoints(road.points)
-            getOutlinePaint().color = color
-            getOutlinePaint().strokeWidth = width
-        }
-        mapView.overlays.add(line)
-        totalPoints += road.points.size
-    }
-
-    // 2) Water — draw before buildings.
-    for (area in data.water) {
-        if (totalPoints + area.points.size > MAX_OSM_POINTS) break
-        val poly = Polygon(mapView).apply {
-            setPoints(area.points)
-            getFillPaint().color = WATER_COLOR
-            getOutlinePaint().color = WATER_COLOR
-            getOutlinePaint().strokeWidth = 1f
-        }
-        mapView.overlays.add(poly)
-        totalPoints += area.points.size
-    }
-
-    // 3) Buildings last.
-    for (area in data.buildings) {
-        if (totalPoints + area.points.size > MAX_OSM_POINTS) break
-        val poly = Polygon(mapView).apply {
-            setPoints(area.points)
-            getFillPaint().color = BUILDING_COLOR
-            getOutlinePaint().color = BUILDING_COLOR
-            getOutlinePaint().strokeWidth = 1f
-        }
-        mapView.overlays.add(poly)
-        totalPoints += area.points.size
-    }
-
-    Log.d("MapScreen", "Total OSM points drawn: $totalPoints")
-    mapView.invalidate()
 }

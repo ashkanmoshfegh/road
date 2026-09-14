@@ -3,6 +3,7 @@ package com.example.road.data.m.local.repository
 import android.content.Context
 import android.util.Log
 import com.graphhopper.GraphHopper
+import com.graphhopper.routing.util.EdgeFilter
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.File
 import javax.inject.Inject
@@ -92,12 +93,15 @@ class GraphRepository @Inject constructor(
         }
 
         return try {
-            val snap = locIndex.findClosest(lat, lon, null)
+            // GraphHopper's findClosest unconditionally calls edgeFilter.accept(...)
+            // internally — passing null there throws an NPE. ALL_EDGES accepts
+            // every edge, which is the correct default when not restricting by
+            // vehicle/edge type.
+            val snap = locIndex.findClosest(lat, lon, EdgeFilter.ALL_EDGES)
             if (!snap.isValid) {
                 Log.w(logTag, "No valid snap found near ($lat, $lon)")
                 return null
             }
-            // Use query point as snapped position (Snap lat/lon API varies by version)
             NodeInfo(snap.closestNode.toLong(), lat, lon)
         } catch (e: Exception) {
             Log.e(logTag, "findNearest failed", e)

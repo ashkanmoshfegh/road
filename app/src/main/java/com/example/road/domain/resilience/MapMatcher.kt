@@ -5,7 +5,47 @@ import com.example.road.data.m.model.Node
 import com.example.road.data.m.model.Position
 import kotlin.math.*
 
+/**
+ * Snaps a raw INS/GPS position onto the nearest road edge.
+ *
+ * Edges are bucketed into a coarse lat/lon grid so that matching a position
+ * only has to scan the handful of edges near it, instead of every edge in
+ * the graph (which was previously ~169,000 edges scanned per call, on the
+ * main thread, up to 50 times a second — the cause of the freeze).
+ */
 class MapMatcher(private val edges: List<Edge>, private val nodes: List<Node>) {
+
+    // ~0.005 deg ≈ 500m at this latitude. Tune down if roads are dense and
+    // matches feel imprecise; tune up if candidate lists are still huge.
+    private val cellSize = 0.005
+
+    private fun cellKey(lat: Double, lon: Double): Long {
+        val cx = floor(lat / cellSize).toLong()
+        val cy = floor(lon / cellSize).toLong()
+        // Pack two 32-bit-range ints into one Long key to avoid boxing a Pair.
+        return (cx shl 32) xor (cy and 0xFFFFFFFFL)
+    }
+
+    // Precomputed once at construction time — this is the one-time O(n) cost,
+    // not something that happens on every match() call.
+    private val grid: Map<Long, List<Edge>> = edges.groupBy { e ->
+        val midLat = (e.from.lat + e.to.lat) / 2.0
+        val midLon = (e.from.lon + e.to.lon) / 2.0
+        cellKey(midLat, midLon)
+    }
+
+    private fun candidateEdges(lat: Double, lon: Double): List<Edge> {
+        val cx = floor(lat / cellSize).toLong()
+        val cy = floor(lon / cellSize).toLong()
+        val result = ArrayList<Edge>()
+        for (dx in -1..1) {
+            for (dy in -1..1) {
+                val key = ((cx + dx) shl 32) xor ((cy + dy) and 0xFFFFFFFFL)
+                grid[key]?.let { result.addAll(it) }
+            }
+        }
+        return result
+    }
 
     // Project a point onto a line segment (A-B) and return the closest point and distance.
     private fun projectOnSegment(px: Double, py: Double, ax: Double, ay: Double, bx: Double, by: Double): Pair<Double, Double> {
@@ -35,11 +75,17 @@ class MapMatcher(private val edges: List<Edge>, private val nodes: List<Node>) {
     }
 
     fun match(position: Position): Position {
+        val candidates = candidateEdges(position.latitude, position.longitude)
+
+        // Fall back to the raw position if the grid cell (and its neighbors)
+        // has no edges nearby — e.g. off the edge of the loaded map.
+        if (candidates.isEmpty()) return position
+
         var bestLat = position.latitude
         var bestLon = position.longitude
         var minDist = Double.MAX_VALUE
 
-        for (edge in edges) {
+        for (edge in candidates) {
             val from = edge.from
             val to = edge.to
 

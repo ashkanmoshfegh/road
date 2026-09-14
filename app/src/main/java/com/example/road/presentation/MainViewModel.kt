@@ -36,7 +36,7 @@ class MainViewModel @Inject constructor(
     private val _route = MutableStateFlow<List<Position>>(emptyList())
     val route: StateFlow<List<Position>> = _route
 
-    private val _instruction = MutableStateFlow("Tap map: set START")
+    private val _instruction = MutableStateFlow("Tap map: set START (your current location)")
     val instruction: StateFlow<String> = _instruction
 
     private val _currentPosition = MutableStateFlow<Position?>(null)
@@ -120,6 +120,9 @@ class MainViewModel @Inject constructor(
             startNodeId == null && destNodeId == null -> {
                 startNodeId = node.id
                 _startPosition.value = Position(lat, lon)
+                // This tap IS "where I am" — there's no GPS, so it becomes
+                // the fixed origin for sensor-based dead reckoning.
+                resilienceManager.setInitialPosition(lat, lon)
                 _instruction.value = "Tap map: set DESTINATION"
                 Log.d("MainViewModel", "Start set: node=${node.id}")
             }
@@ -136,6 +139,7 @@ class MainViewModel @Inject constructor(
                 _startPosition.value = Position(lat, lon)
                 _destPosition.value = null
                 _route.value = emptyList()
+                resilienceManager.setInitialPosition(lat, lon)
                 _instruction.value = "Tap map: set DESTINATION"
                 Log.d("MainViewModel", "Reset + new start: node=${node.id}")
             }
@@ -189,8 +193,9 @@ class MainViewModel @Inject constructor(
         _startPosition.value = null
         _destPosition.value = null
         _route.value = emptyList()
-        _instruction.value = "Tap map: set START"
+        _instruction.value = "Tap map: set START (your current location)"
         _routeError.value = null
+        resilienceManager.clearPosition()
         Log.d("MainViewModel", "Reset")
     }
 
