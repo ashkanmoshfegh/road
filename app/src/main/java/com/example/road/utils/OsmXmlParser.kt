@@ -18,28 +18,31 @@ import java.io.InputStream
  *
  *   1) read every <node>, remember its lat/lon in a LongSparseArray keyed by id
  *   2) read every <way>, resolve its <nd> refs against that array, and
- *      classify it (road / building / water) from its <tag> values
+ *      classify it (road / building / water / park) from its <tag> values
  *
  * Relations are ignored entirely - for a road-focused map, ways already carry
  * everything that matters (highway geometry, building footprints, water
- * polygons).
+ * polygons, park/green-space boundaries).
  */
 object OsmXmlParser {
 
     data class RoadFeature(
         val points: List<GeoPoint>,
-        val highway: String
+        val highway: String,
+        val name: String?
     )
 
     data class AreaFeature(
         val points: List<GeoPoint>,
-        val kind: String // "building" | "water"
+        val kind: String, // "building" | "water" | "park"
+        val name: String?
     )
 
     data class ParseResult(
         val roads: List<RoadFeature>,
         val buildings: List<AreaFeature>,
-        val water: List<AreaFeature>
+        val water: List<AreaFeature>,
+        val parks: List<AreaFeature>
     )
 
     // Hard ceilings so a big extract can't stall the UI thread or OOM the
@@ -47,12 +50,23 @@ object OsmXmlParser {
     // this app, so they get the largest budget. Raise these if your device
     // can handle it, or - better - pre-trim the .osm file to your area of
     // interest with a tool like osmium before bundling it.
-    // Tehran extract has ~148K classified ways. These caps cover all of them
-    // with headroom. The streaming parser keeps memory bounded by only storing
-    // node coords (1.5M GeoPoints ~ 30MB) plus the feature lists.
     private const val MAX_ROADS = 200_000
     private const val MAX_BUILDINGS = 100_000
     private const val MAX_WATER = 20_000
+    private const val MAX_PARKS = 50_000
+
+    // Values of landuse/leisure/natural that count as "green space" for
+    // rendering purposes. Extend this if your extract has tags you want
+    // included that aren't covered here.
+    private val PARK_LANDUSE = setOf(
+        "park", "forest", "grass", "meadow", "recreation_ground",
+        "cemetery", "village_green", "orchard"
+    )
+    private val PARK_LEISURE = setOf(
+        "park", "garden", "nature_reserve", "pitch", "playground",
+        "golf_course", "common"
+    )
+    private val PARK_NATURAL = setOf("wood", "grassland", "scrub", "heath")
 
     /**
      * @param assetFileName name of the .osm file under app/src/main/assets
@@ -70,16 +84,17 @@ object OsmXmlParser {
         val roads = mutableListOf<RoadFeature>()
         val buildings = mutableListOf<AreaFeature>()
         val water = mutableListOf<AreaFeature>()
+        val parks = mutableListOf<AreaFeature>()
 
         val waysStart = System.currentTimeMillis()
         context.assets.open(assetFileName).use {
-            parseWays(it, nodeCoords, roads, buildings, water)
+            parseWays(it, nodeCoords, roads, buildings, water, parks)
         }
         android.util.Log.d("OsmXmlParser",
             "Parsed ways in ${System.currentTimeMillis() - waysStart}ms: " +
-                    "roads=${roads.size} buildings=${buildings.size} water=${water.size}")
+                    "roads=${roads.size} buildings=${buildings.size} water=${water.size} parks=${parks.size}")
 
-        return ParseResult(roads, buildings, water)
+        return ParseResult(roads, buildings, water, parks)
     }
 
     private fun parseNodes(input: InputStream, out: LongSparseArray<GeoPoint>) {
@@ -106,7 +121,8 @@ object OsmXmlParser {
         nodeCoords: LongSparseArray<GeoPoint>,
         roads: MutableList<RoadFeature>,
         buildings: MutableList<AreaFeature>,
-        water: MutableList<AreaFeature>
+        water: MutableList<AreaFeature>,
+        parks: MutableList<AreaFeature>
     ) {
         val parser = Xml.newPullParser()
         parser.setFeature(XmlPullParser.FEATURE_PROCESS_NAMESPACES, false)
@@ -136,7 +152,7 @@ object OsmXmlParser {
                     val wayRefs = refs
                     val wayTags = tags
                     if (wayRefs != null && wayTags != null && wayRefs.size >= 2) {
-                        classifyAndStore(wayRefs, wayTags, nodeCoords, roads, buildings, water)
+                        classifyAndStore(wayRefs, wayTags, nodeCoords, roads, buildings, water, parks)
                     }
                     refs = null
                     tags = null
@@ -152,25 +168,34 @@ object OsmXmlParser {
         nodeCoords: LongSparseArray<GeoPoint>,
         roads: MutableList<RoadFeature>,
         buildings: MutableList<AreaFeature>,
-        water: MutableList<AreaFeature>
+        water: MutableList<AreaFeature>,
+        parks: MutableList<AreaFeature>
     ) {
         val highway = tags["highway"]
         val isWater = tags["natural"] == "water" || tags.containsKey("waterway") ||
                 tags["landuse"] == "reservoir"
         val isBuilding = tags.containsKey("building")
+        val isPark = tags["landuse"] in PARK_LANDUSE ||
+                tags["leisure"] in PARK_LEISURE ||
+                tags["natural"] in PARK_NATURAL
+        val name = tags["name"]
 
         when {
             highway != null && roads.size < MAX_ROADS -> {
                 val points = resolvePoints(refs, nodeCoords) ?: return
-                roads.add(RoadFeature(points, highway))
+                roads.add(RoadFeature(points, highway, name))
             }
             isWater && water.size < MAX_WATER -> {
                 val points = resolvePoints(refs, nodeCoords) ?: return
-                if (points.size >= 3) water.add(AreaFeature(points, "water"))
+                if (points.size >= 3) water.add(AreaFeature(points, "water", name))
+            }
+            isPark && parks.size < MAX_PARKS -> {
+                val points = resolvePoints(refs, nodeCoords) ?: return
+                if (points.size >= 3) parks.add(AreaFeature(points, "park", name))
             }
             isBuilding && buildings.size < MAX_BUILDINGS -> {
                 val points = resolvePoints(refs, nodeCoords) ?: return
-                if (points.size >= 3) buildings.add(AreaFeature(points, "building"))
+                if (points.size >= 3) buildings.add(AreaFeature(points, "building", name))
             }
         }
     }
