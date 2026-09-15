@@ -12,6 +12,11 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import javax.inject.Inject
+import kotlin.math.atan2
+import kotlin.math.cos
+import kotlin.math.sin
+
+enum class EditTarget { START, DEST, NONE }
 
 @HiltViewModel
 class MainViewModel @Inject constructor(
@@ -42,8 +47,20 @@ class MainViewModel @Inject constructor(
     private val _currentPosition = MutableStateFlow<Position?>(null)
     val currentPosition: StateFlow<Position?> = _currentPosition
 
+    // Which point the next tap will set. Replaces the old implicit
+    // "first tap = start, second tap = dest, third tap = reset+restart"
+    // sequence, which had no way to go back and move START again without
+    // pressing Reset. Now "Set Start" / "Set Destination" buttons let the
+    // user re-enter either mode at any time.
+    private val _editTarget = MutableStateFlow(EditTarget.START)
+    val editTarget: StateFlow<EditTarget> = _editTarget
+
+    private val _isSimulating = MutableStateFlow(false)
+    val isSimulating: StateFlow<Boolean> = _isSimulating
+
     private var startNodeId: Long? = null
     private var destNodeId: Long? = null
+    private var simulationJob: Job? = null
 
     init {
         Log.d("MainViewModel", "created, starting graph load")
@@ -99,8 +116,22 @@ class MainViewModel @Inject constructor(
         loadGraphPoll()
     }
 
+    /** Switches to "next tap sets START" mode. Callable at any time, not just on Reset. */
+    fun beginSetStart() {
+        _editTarget.value = EditTarget.START
+        _instruction.value = "Tap map: set START (your current location)"
+        _routeError.value = null
+    }
+
+    /** Switches to "next tap sets DESTINATION" mode. Callable at any time. */
+    fun beginSetDest() {
+        _editTarget.value = EditTarget.DEST
+        _instruction.value = "Tap map: set DESTINATION"
+        _routeError.value = null
+    }
+
     fun onMapTap(lat: Double, lon: Double) {
-        Log.d("MainViewModel", "Tap: ($lat, $lon) graphReady=${_graphReady.value}")
+        Log.d("MainViewModel", "Tap: ($lat, $lon) graphReady=${_graphReady.value} target=${_editTarget.value}")
 
         if (!_graphReady.value) {
             _routeError.value = "Map data not ready — please wait"
@@ -112,36 +143,51 @@ class MainViewModel @Inject constructor(
             return
         }
 
-        val node = graphRepository.findNearest(graph, lat, lon) ?: return
-        Log.d("MainViewModel", "Nearest node: ${node.id} at (${node.lat}, ${node.lon})")
+        // node.lat/node.lon are the actual snapped-to-road point, not the
+        // raw tap — see GraphRepository.findNearest.
+        val node = graphRepository.findNearest(graph, lat, lon) ?: run {
+            _routeError.value = "No road found near that point"
+            return
+        }
+        Log.d("MainViewModel", "Nearest road point: node=${node.id} at (${node.lat}, ${node.lon})")
 
-        // 3-state tap machine: start → dest → reset+newStart
-        when {
-            startNodeId == null && destNodeId == null -> {
+        when (_editTarget.value) {
+            EditTarget.START -> {
                 startNodeId = node.id
                 _startPosition.value = Position(node.lat, node.lon)
-                // This tap IS "where I am" — there's no GPS, so it becomes
-                // the fixed origin for sensor-based dead reckoning.
                 resilienceManager.setInitialPosition(node.lat, node.lon)
-                _instruction.value = "Tap map: set DESTINATION"
-                Log.d("MainViewModel", "Start set: node=${node.id}")
+                _routeError.value = null
+
+                if (destNodeId != null) {
+                    _editTarget.value = EditTarget.NONE
+                    if (_route.value.isNotEmpty()) {
+                        // Start moved after a route already existed — refresh it
+                        // instead of leaving a stale route on screen.
+                        calculateRoute()
+                    } else {
+                        _instruction.value = "Route shown. Use buttons to change Start/Destination"
+                        calculateRoute()
+                    }
+                } else {
+                    _editTarget.value = EditTarget.DEST
+                    _instruction.value = "Tap map: set DESTINATION"
+                }
             }
-            startNodeId != null && destNodeId == null -> {
+            EditTarget.DEST -> {
                 destNodeId = node.id
                 _destPosition.value = Position(node.lat, node.lon)
-                _instruction.value = "Route shown. Tap map or Reset to start over"
-                Log.d("MainViewModel", "Dest set: node=${node.id}")
+                _routeError.value = null
+                _editTarget.value = EditTarget.NONE
+
+                if (startNodeId != null) {
+                    calculateRoute()
+                } else {
+                    _instruction.value = "Now set START"
+                    _editTarget.value = EditTarget.START
+                }
             }
-            else -> {
-                // Reset and place new start
-                startNodeId = node.id
-                destNodeId = null
-                _startPosition.value = Position(node.lat, node.lon)
-                _destPosition.value = null
-                _route.value = emptyList()
-                resilienceManager.setInitialPosition(node.lat, node.lon)
-                _instruction.value = "Tap map: set DESTINATION"
-                Log.d("MainViewModel", "Reset + new start: node=${node.id}")
+            EditTarget.NONE -> {
+                _routeError.value = "Tap 'Set Start' or 'Set Destination' to move a point"
             }
         }
     }
@@ -183,24 +229,64 @@ class MainViewModel @Inject constructor(
         _route.value = ghPoints.map { ghp ->
             Position(latitude = ghp.lat, longitude = ghp.lon)
         }
-        _instruction.value = "Route shown. Tap map or Reset to start over"
+        _instruction.value = "Route shown. Use buttons to change Start/Destination"
         Log.d("MainViewModel", "Route: ${ghPoints.size} points")
     }
 
     fun resetAll() {
+        stopSimulation()
         startNodeId = null
         destNodeId = null
         _startPosition.value = null
         _destPosition.value = null
         _route.value = emptyList()
+        _editTarget.value = EditTarget.START
         _instruction.value = "Tap map: set START (your current location)"
         _routeError.value = null
         resilienceManager.clearPosition()
         Log.d("MainViewModel", "Reset")
     }
 
+    /** Walks the calculated route at a fixed pace, driving currentPosition. */
     fun startSimulation() {
-        Log.d("MainViewModel", "startSimulation — not yet implemented")
+        val points = _route.value
+        if (points.size < 2) {
+            _routeError.value = "No route to simulate — calculate a route first"
+            return
+        }
+        simulationJob?.cancel()
+        resilienceManager.setSimulationActive(true)
+        _isSimulating.value = true
+
+        simulationJob = viewModelScope.launch {
+            for (i in points.indices) {
+                val p = points[i]
+                val bearing = if (i < points.size - 1) bearingBetween(p, points[i + 1]) else 0f
+                resilienceManager.setSimulatedPosition(Position(p.latitude, p.longitude, bearing))
+                delay(400L)
+            }
+            _isSimulating.value = false
+            resilienceManager.setSimulationActive(false)
+        }
+    }
+
+    fun stopSimulation() {
+        simulationJob?.cancel()
+        simulationJob = null
+        if (_isSimulating.value) {
+            _isSimulating.value = false
+            resilienceManager.setSimulationActive(false)
+        }
+    }
+
+    private fun bearingBetween(a: Position, b: Position): Float {
+        val lat1 = Math.toRadians(a.latitude)
+        val lat2 = Math.toRadians(b.latitude)
+        val dLon = Math.toRadians(b.longitude - a.longitude)
+        val y = sin(dLon) * cos(lat2)
+        val x = cos(lat1) * sin(lat2) - sin(lat1) * cos(lat2) * cos(dLon)
+        val brngDeg = Math.toDegrees(atan2(y, x))
+        return ((brngDeg + 360.0) % 360.0).toFloat()
     }
 
     fun startSensors() {

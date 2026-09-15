@@ -27,17 +27,13 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * Tracks the device's position using ONLY onboard sensors — accelerometer +
- * gyroscope dead-reckoning — starting from a fixed point the user taps on
- * the map (their "I am here" tap). GPS/LocationManager is deliberately never
- * used anywhere in this class.
+ * Tracks position using ONLY onboard sensors (accelerometer + gyroscope),
+ * starting from a fixed point the user taps on the map. GPS is never used.
  *
- * Because there's no GPS to periodically re-anchor against, all displacement
- * is measured relative to [originPosition], which is set exactly once per
- * "session" via [setInitialPosition] and never moved afterward. This means
- * position will drift over time/distance — that's an inherent limitation of
- * sensor-only dead reckoning, not a bug — [MapMatcher] snapping to road
- * geometry is what keeps the drift from looking obviously wrong on screen.
+ * Adds simulation support: while [simulationActive] is true, real sensor
+ * samples are ignored and position instead comes from whatever
+ * [setSimulatedPosition] is fed (driven by MainViewModel walking the
+ * computed route).
  */
 @Singleton
 class ResilienceManager @Inject constructor(
@@ -53,8 +49,8 @@ class ResilienceManager @Inject constructor(
     private var mapMatcher: MapMatcher? = null
     private var routeCalculator: RouteCalculator? = null
 
-    // Fixed dead-reckoning origin. Set once by setInitialPosition() when the
-    // user taps their starting point; never updated afterward.
+    // Fixed dead-reckoning origin. Set (and re-settable) via setInitialPosition()
+    // whenever the user taps/re-taps their starting point.
     private var originPosition: Position? = null
 
     private var latestAccel = FloatArray(3)
@@ -63,13 +59,13 @@ class ResilienceManager @Inject constructor(
     private var hasGyro = false
     private var sensorsActive = false
 
-    // Sensor callbacks run here, off the main thread — map-matching against
-    // ~169K edges is too heavy to do on Dispatchers.Main.
+    // Simulation mode: when active, real sensor input is ignored entirely,
+    // and position instead comes from setSimulatedPosition() calls.
+    @Volatile private var simulationActive = false
+
     private val sensorThread = HandlerThread("ResilienceSensorThread").apply { start() }
     private val sensorHandler = Handler(sensorThread.looper)
 
-    // Only run the expensive map-matching scan this often; displacement is
-    // still integrated on every sensor sample regardless.
     private val minMatchIntervalMs = 150L
     private var lastMatchTime = 0L
 
@@ -104,9 +100,8 @@ class ResilienceManager @Inject constructor(
     }
 
     /**
-     * Call when the user taps the map to mark their current/starting
-     * location. This becomes the fixed origin for all subsequent
-     * sensor-based dead reckoning.
+     * Sets/re-sets the fixed origin for dead reckoning. Safe to call more
+     * than once — e.g. when the user taps "Set Start" again to move it.
      */
     fun setInitialPosition(lat: Double, lon: Double, bearingDeg: Float = 0f) {
         val pos = Position(latitude = lat, longitude = lon, bearing = bearingDeg, accuracy = 0f)
@@ -117,15 +112,35 @@ class ResilienceManager @Inject constructor(
         Log.d("ResilienceManager", "Initial position set: ($lat, $lon)")
     }
 
-    /** Call on Reset — stops drawing/tracking a position until the next tap. */
     fun clearPosition() {
         originPosition = null
         _currentPosition.value = null
         sensorFusion.reset()
     }
 
-    // Runs on sensorThread (see startSensors()), not the main thread.
+    /** Toggles simulation mode. While true, onSensorChanged() is a no-op. */
+    fun setSimulationActive(active: Boolean) {
+        simulationActive = active
+        if (!active) {
+            // Leaving simulation — reset dead reckoning from wherever the
+            // simulation left off, so real sensor tracking resumes cleanly
+            // instead of jumping back to the old pre-simulation origin.
+            _currentPosition.value?.let { pos ->
+                originPosition = pos
+                sensorFusion.reset(pos.bearing)
+                lastMatchTime = 0L
+            }
+        }
+    }
+
+    /** Directly sets the displayed position while simulating a route walk-through. */
+    fun setSimulatedPosition(pos: Position) {
+        _currentPosition.value = pos
+    }
+
+    // Runs on sensorThread, not the main thread.
     override fun onSensorChanged(event: SensorEvent?) {
+        if (simulationActive) return
         event ?: return
         when (event.sensor.type) {
             Sensor.TYPE_ACCELEROMETER -> { latestAccel = event.values.clone(); hasAccel = true }
@@ -133,7 +148,7 @@ class ResilienceManager @Inject constructor(
         }
 
         if (!sensorsActive || !hasAccel || !hasGyro) return
-        val origin = originPosition ?: return // no start point tapped yet — nothing to track from
+        val origin = originPosition ?: return
 
         val gyroZ = latestGyro[2]
         val accelMag = sqrt(
@@ -185,8 +200,6 @@ class ResilienceManager @Inject constructor(
         if (gyroscope != null) {
             sensorManager.registerListener(this, gyroscope, SensorManager.SENSOR_DELAY_GAME, sensorHandler)
         }
-        // No GPS/LocationManager registration — positioning is sensor-only,
-        // by design.
     }
 
     fun stopSensors() {

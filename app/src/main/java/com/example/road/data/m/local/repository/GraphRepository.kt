@@ -81,15 +81,18 @@ class GraphRepository @Inject constructor(
     fun getGraph(): GraphHopper? = graphHopper
 
     /**
-     * Find the nearest graph node/edge to the given lat/lon and return the
-     * actual road-snapped position.
+     * Find the nearest road to the given lat/lon and return the actual
+     * point ON THE ROAD closest to it — not the tapped coordinates
+     * themselves, and not just the nearest graph node (which can sit far
+     * along the street from where the user tapped).
      *
-     * Uses LocationIndex.findClosest which is O(log n) via quadtree.
-     * Returns a NodeInfo carrying the SNAPPED coordinates — the point on the
-     * road network — NOT the raw tap point. Returning the raw tap is what
-     * used to make start/destination look off-road. GHPoint3D's lat/lon come
-     * from getSnappedPoint() only after calcSnappedPoint() runs; findClosest
-     * does that internally, so snappedPoint is populated here.
+     * Previously this returned NodeInfo(snap.closestNode, lat, lon) —
+     * note lat/lon there were the ORIGINAL query coordinates, echoed back
+     * unchanged. That meant "snapping" never actually happened visually:
+     * the start/destination marker always sat exactly where you tapped,
+     * even if that was in the middle of a building block. Snap.snappedPoint
+     * is GraphHopper's own computed closest point on the matched edge's
+     * geometry, which is what should be shown/used instead.
      */
     fun findNearest(graph: GraphHopper, lat: Double, lon: Double): NodeInfo? {
         val locIndex = graph.locationIndex
@@ -99,22 +102,13 @@ class GraphRepository @Inject constructor(
         }
 
         return try {
-            // GraphHopper's findClosest unconditionally calls edgeFilter.accept(...)
-            // internally — passing null there throws an NPE. ALL_EDGES accepts
-            // every edge, which is the correct default when not restricting by
-            // vehicle/edge type.
             val snap = locIndex.findClosest(lat, lon, EdgeFilter.ALL_EDGES)
             if (!snap.isValid) {
                 Log.w(logTag, "No valid snap found near ($lat, $lon)")
                 return null
             }
-            // snappedPoint is the closest point lying ON the road network —
-            // exactly what we want to pin the marker and route origin to.
-            val sp = snap.snappedPoint
-            val snappedLat = if (sp != null) sp.lat else lat
-            val snappedLon = if (sp != null) sp.lon else lon
-            Log.d(logTag, "Snapped ($lat, $lon) -> node=${snap.closestNode} at ($snappedLat, $snappedLon)")
-            NodeInfo(snap.closestNode.toLong(), snappedLat, snappedLon)
+            val snapped = snap.snappedPoint // GHPoint3D — the true nearest point on the road
+            NodeInfo(snap.closestNode.toLong(), snapped.lat, snapped.lon)
         } catch (e: Exception) {
             Log.e(logTag, "findNearest failed", e)
             null
