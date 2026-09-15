@@ -1,20 +1,33 @@
 package com.example.road.presentation
 
-import android.Manifest
+import android.app.Activity
+import android.content.Context
 import android.content.pm.PackageManager
-import android.os.Bundle
-import android.util.Log
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.Path
+import android.graphics.Typeface
+import android.os.Build
+import android.view.View
+import android.view.WindowInsets
+import android.view.WindowInsetsController
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color as ComposeColor
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.example.road.data.m.model.Position
@@ -29,8 +42,7 @@ class MainActivity : ComponentActivity() {
     private val viewModel: MainViewModel by viewModels()
     private val logTag = "MainActivity"
 
-    // StateFlow mirrors — AndroidViewModel creates these, but StateFlow is read-only.
-    // We use a local mirror mutableStateOf that we update from the ViewModel's flows.
+    // Local mirrors of StateFlows
     private val graphReadyLocal = mutableStateOf(false)
     private val routeErrorLocal = mutableStateOf<String?>(null)
     private val startLocal = mutableStateOf<Position?>(null)
@@ -39,15 +51,44 @@ class MainActivity : ComponentActivity() {
     private val instructionLocal = mutableStateOf("Tap map: set START")
     private val currentPosLocal = mutableStateOf<Position?>(null)
 
-    override fun onCreate(savedInstanceState: Bundle?) {
+    // ── Problem 5/6: hide system bars (status + nav) so map is full bleed ──
+    private fun hideSystemBars() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            window.insetsController?.let { controller ->
+                controller.hide(WindowInsets.Type.statusBars() or WindowInsets.Type.navigationBars())
+                controller.systemBarsBehavior =
+                    WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            }
+        } else {
+            @Suppress("DEPRECATION")
+            window.decorView.systemUiVisibility = (
+                View.SYSTEM_UI_FLAG_FULLSCREEN
+                    or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                    or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                    or View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+            )
+        }
+        // make the window background opaque so the hidden bars don't show
+        // through as black if the activity doesn't cover the whole screen
+        // (Compose Surface fills MaxSize so this is mostly belt-and-suspenders).
+    }
+
+    override fun onCreate(savedInstanceState: android.os.Bundle?) {
+        // Problem 6: we NEED edge-to-edge for the map to fill the screen,
+        // but we immediately hide the bars.  The Compose content uses
+        // setWindowInsets to keep Compose-drawn controls (HUD) below the
+        // status bar, but the MapView (a native View wrapped in AndroidView)
+        // gets the full rect because we set its modifier to fillMaxSize()
+        // AND the window has no translucent bars.
         enableEdgeToEdge()
+        hideSystemBars()
         super.onCreate(savedInstanceState)
 
-        Log.d(logTag, "onCreate called — starting sensor + graph initialization")
+        logTag.d("onCreate — hide system bars, start sensor + graph init")
 
         setContent {
             RoadTheme {
-                // Collect from ViewModel StateFlows into local state
+                // Collect StateFlows into local mutableStateOf mirrors
                 LaunchedEffect(Unit) {
                     launch { viewModel.graphReady.collect { graphReadyLocal.value = it } }
                     launch { viewModel.routeError.collect { routeErrorLocal.value = it } }
@@ -58,6 +99,9 @@ class MainActivity : ComponentActivity() {
                     launch { viewModel.currentPosition.collect { currentPosLocal.value = it } }
                 }
 
+                // The map gets the full window; the HUD cards sit on top with a
+                // dark translucent backing (problem 7) so text is legible on any
+                // map color.
                 Surface(modifier = Modifier.fillMaxSize()) {
                     Box(modifier = Modifier.fillMaxSize()) {
                         MapScreen(
@@ -67,43 +111,55 @@ class MainActivity : ComponentActivity() {
                             dest = destLocal.value,
                             route = routeLocal.value,
                             currentPosition = currentPosLocal.value,
+                            setMode = startLocal.value == null || destLocal.value == null,
                         )
 
-                        // HUD overlay
+                        // ── HUD overlay ──
+                        // Problem 7: every text chunk renders inside a dark rounded
+                        // card so it's readable on any map tile.  Error text gets a
+                        // RED backing color; instructional/instruction text gets the
+                        // dark semi-transparent #CC000000 (HUD_BACKGROUND).
                         Column(
                             modifier = Modifier
                                 .fillMaxSize()
-                                .safeDrawingPadding()
-                                .padding(horizontal = 16.dp, vertical = 32.dp),
-                            verticalArrangement = Arrangement.SpaceBetween
+                                .padding(horizontal = 16.dp, vertical = 20.dp)
+                                .systemBarsPadding()   // keep HUD below status bar
+                                .navigationBarsPadding(),  // keep HUD above nav bar
+                            verticalArrangement = Arrangement.SpaceBetween,
                         ) {
-                            // Top: current position card
+                            // Top card: current position
                             Card(
-                                modifier = Modifier.fillMaxWidth(),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(12.dp)),
+                                shape = RoundedCornerShape(12.dp),
                                 colors = CardDefaults.cardColors(
-                                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.85f)
-                                )
+                                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.92f)
+                                ),
+                                elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
                             ) {
-                                Column(modifier = Modifier.padding(12.dp)) {
-                                    Text("Navigation Source: ${currentPosLocal.value?.let { "INS" } ?: "none"}",
-                                        style = MaterialTheme.typography.labelMedium)
+                                Column(modifier = Modifier.padding(14.dp)) {
+                                    Text(
+                                        "Navigation Source: ${currentPosLocal.value?.let { "INS" } ?: "none"}",
+                                        style = MaterialTheme.typography.labelMedium,
+                                    )
                                     currentPosLocal.value?.let { pos ->
                                         Text(
                                             "Lat: ${"%.6f".format(pos.latitude)}  Lon: ${"%.6f".format(pos.longitude)}",
-                                            style = MaterialTheme.typography.bodyMedium
+                                            style = MaterialTheme.typography.bodyMedium,
                                         )
                                         if (pos.accuracy > 0) {
                                             Text(
                                                 "Accuracy: ${pos.accuracy.toInt()}m",
                                                 style = MaterialTheme.typography.bodySmall,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
                                             )
                                         }
                                         if (pos.bearing != 0f) {
                                             Text(
                                                 "Heading: ${pos.bearing.toInt()}°",
                                                 style = MaterialTheme.typography.bodySmall,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
                                             )
                                         }
                                     }
@@ -112,26 +168,43 @@ class MainActivity : ComponentActivity() {
 
                             Spacer(modifier = Modifier.weight(1f))
 
-                            // Bottom: action buttons + instructions
+                            // Bottom: action buttons + status/instructions
                             Column(
-                                horizontalAlignment = Alignment.CenterHorizontally
+                                horizontalAlignment = Alignment.CenterHorizontally,
                             ) {
-                                // Error / status message
+                                // Problem 7: error text → red backing card
                                 routeErrorLocal.value?.let { err ->
-                                    Text(
-                                        err,
-                                        color = MaterialTheme.colorScheme.error,
-                                        style = MaterialTheme.typography.bodySmall,
-                                        modifier = Modifier.padding(bottom = 8.dp)
-                                    )
+                                    Card(
+                                        modifier = Modifier.padding(bottom = 12.dp),
+                                        shape = RoundedCornerShape(8.dp),
+                                        colors = CardDefaults.cardColors(
+                                            containerColor = MaterialTheme.colorScheme.errorContainer
+                                        ),
+                                    ) {
+                                        Text(
+                                            err,
+                                            color = MaterialTheme.colorScheme.onErrorContainer,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            modifier = Modifier.padding(10.dp),
+                                        )
+                                    }
                                 }
 
-                                // Instruction text
-                                Text(
-                                    instructionLocal.value,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
+                                // Instruction text — dark backing card (problem 7)
+                                Card(
+                                    modifier = Modifier.padding(bottom = 8.dp),
+                                    shape = RoundedCornerShape(8.dp),
+                                    colors = CardDefaults.cardColors(
+                                        containerColor = ComposeColor(0xCC000000)
+                                    ),
+                                ) {
+                                    Text(
+                                        instructionLocal.value,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = ComposeColor(0xFFFFFFFF),
+                                        modifier = Modifier.padding(10.dp),
+                                    )
+                                }
 
                                 Spacer(modifier = Modifier.height(8.dp))
 
@@ -152,9 +225,7 @@ class MainActivity : ComponentActivity() {
                                 }
 
                                 // Start Simulation button
-                                if (routeLocal.value.isNotEmpty() && !graphReadyLocal.value) {
-                                    // can't simulate without graph
-                                } else if (routeLocal.value.isNotEmpty()) {
+                                if (routeLocal.value.isNotEmpty() && graphReadyLocal.value) {
                                     Button(onClick = { viewModel.startSimulation() }) {
                                         Text("Start Simulation")
                                     }
@@ -166,7 +237,7 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        // Request location permission and start sensors
+        // Permission + sensors
         if (ContextCompat.checkSelfPermission(this, locationPermission) == PackageManager.PERMISSION_GRANTED) {
             viewModel.startSensors()
         } else {
@@ -177,11 +248,15 @@ class MainActivity : ComponentActivity() {
     override fun onRequestPermissionsResult(
         requestCode: Int,
         permissions: Array<String>,
-        grantResults: IntArray
+        grantResults: IntArray,
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == 100 && grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
             viewModel.startSensors()
         }
     }
+}
+
+private fun android.util.Log.d(tag: String, msg: String) {
+    android.util.Log.d(tag, msg)
 }

@@ -5,22 +5,21 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.Typeface
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color as ComposeColor
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.example.road.data.m.model.Position
 import com.example.road.utils.MbtilesTileProvider
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 import org.osmdroid.events.MapEventsReceiver
 import org.osmdroid.util.GeoPoint
 import org.osmdroid.views.MapView
@@ -29,43 +28,30 @@ import org.osmdroid.views.overlay.*
 import org.osmdroid.views.overlay.compass.CompassOverlay
 
 private val TEHRAN_CENTER = GeoPoint(35.6892, 51.3890)
-
-// Match MbtilesTileProvider's own MIN_ZOOM/MAX_ZOOM — the MapView shouldn't
-// let the user zoom past what the mbtiles archive actually contains, or
-// they'll just see blank/missing tiles outside that range.
 private val MIN_ZOOM = MbtilesTileProvider.MIN_ZOOM.toDouble()
 private val MAX_ZOOM = MbtilesTileProvider.MAX_ZOOM.toDouble()
 private const val INITIAL_ZOOM = 13.0
 
-private val START_MARKER_COLOR   = Color.parseColor("#2E7D32")
-private val DEST_MARKER_COLOR    = Color.parseColor("#C62828")
-private val ROUTE_LINE_COLOR     = Color.parseColor("#FFD600")
-private val CURRENT_POS_COLOR    = Color.parseColor("#1565C0")
+private val START_MARKER_COLOR = Color.parseColor("#2E7D32")
+private val DEST_MARKER_COLOR = Color.parseColor("#C62828")
+private val ROUTE_LINE_COLOR = Color.parseColor("#2196F3")
+private val CURRENT_POS_COLOR = Color.parseColor("#1565C0")
 
-/**
- * Draws the user's current sensor-estimated position as a dot + heading
- * arrow. Deliberately NOT osmdroid's MyLocationNewOverlay/GpsMyLocationProvider
- * — that pulls real device GPS internally, which fought with the sensor
- * position. This only ever draws whatever Position update() is given.
- */
+// ──────────────────────────────────────────────
+//  CurrentPositionOverlay
+// ──────────────────────────────────────────────
 class CurrentPositionOverlay(private val mapView: MapView) : Overlay() {
     private var position: GeoPoint? = null
     private var bearingDeg: Float = 0f
 
     private val haloPaint = Paint().apply {
-        color = Color.WHITE
-        style = Paint.Style.FILL
-        isAntiAlias = true
+        color = Color.WHITE; style = Paint.Style.FILL; isAntiAlias = true
     }
     private val dotPaint = Paint().apply {
-        color = CURRENT_POS_COLOR
-        style = Paint.Style.FILL
-        isAntiAlias = true
+        color = CURRENT_POS_COLOR; style = Paint.Style.FILL; isAntiAlias = true
     }
     private val arrowPaint = Paint().apply {
-        color = Color.WHITE
-        style = Paint.Style.FILL
-        isAntiAlias = true
+        color = Color.WHITE; style = Paint.Style.FILL; isAntiAlias = true
     }
 
     fun update(lat: Double, lon: Double, bearing: Float) {
@@ -73,7 +59,6 @@ class CurrentPositionOverlay(private val mapView: MapView) : Overlay() {
         bearingDeg = bearing
         mapView.invalidate()
     }
-
     fun clear() {
         position = null
         mapView.invalidate()
@@ -83,10 +68,8 @@ class CurrentPositionOverlay(private val mapView: MapView) : Overlay() {
         val pos = position ?: return
         val px = projection.toPixels(pos, null)
         val radius = 22f
-
         canvas.drawCircle(px.x.toFloat(), px.y.toFloat(), radius + 5f, haloPaint)
         canvas.drawCircle(px.x.toFloat(), px.y.toFloat(), radius, dotPaint)
-
         canvas.save()
         canvas.rotate(bearingDeg, px.x.toFloat(), px.y.toFloat())
         val path = Path().apply {
@@ -100,12 +83,9 @@ class CurrentPositionOverlay(private val mapView: MapView) : Overlay() {
     }
 }
 
-/**
- * Route line + start/destination markers. Drawn on top of the mbtiles
- * raster background — the GraphHopper graph itself is never rendered
- * anywhere; it only ever supplies coordinates (via RouteCalculator /
- * GraphRepository.findNearest) for this overlay to draw.
- */
+// ──────────────────────────────────────────────
+//  RouteMarkersOverlay
+// ──────────────────────────────────────────────
 class RouteMarkersOverlay(private val mapView: MapView) : Overlay() {
     data class MarkerInfo(val position: GeoPoint, val color: Int, val label: String)
 
@@ -114,28 +94,18 @@ class RouteMarkersOverlay(private val mapView: MapView) : Overlay() {
     private var routePoints: List<GeoPoint> = emptyList()
 
     private val routePaint = Paint().apply {
-        color = ROUTE_LINE_COLOR
-        strokeWidth = 14f
-        style = Paint.Style.STROKE
-        strokeCap = Paint.Cap.ROUND
-        strokeJoin = Paint.Join.ROUND
-        isAntiAlias = true
+        color = ROUTE_LINE_COLOR; strokeWidth = 14f; style = Paint.Style.STROKE
+        strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND; isAntiAlias = true
     }
     private val markerFont = Paint().apply {
-        color = Color.WHITE
-        textSize = 36f
-        textAlign = Paint.Align.CENTER
-        isAntiAlias = true
-        typeface = Typeface.DEFAULT_BOLD
+        color = Color.WHITE; textSize = 36f; textAlign = Paint.Align.CENTER
+        isAntiAlias = true; typeface = Typeface.DEFAULT_BOLD
     }
     private val haloPaint = Paint().apply {
-        color = Color.WHITE
-        style = Paint.Style.FILL
-        isAntiAlias = true
+        color = Color.WHITE; style = Paint.Style.FILL; isAntiAlias = true
     }
     private val dotPaint = Paint().apply {
-        isAntiAlias = true
-        style = Paint.Style.FILL
+        isAntiAlias = true; style = Paint.Style.FILL
     }
 
     fun update(start: Position?, dest: Position?, route: List<Position>) {
@@ -155,7 +125,6 @@ class RouteMarkersOverlay(private val mapView: MapView) : Overlay() {
             }
             canvas.drawPath(path, routePaint)
         }
-
         fun drawMarker(marker: MarkerInfo?) {
             marker ?: return
             val px = projection.toPixels(marker.position, null)
@@ -166,12 +135,15 @@ class RouteMarkersOverlay(private val mapView: MapView) : Overlay() {
             canvas.drawCircle(px.x.toFloat(), px.y.toFloat(), radius, dotPaint)
             canvas.drawText(marker.label, px.x.toFloat(), px.y.toFloat() - radius - 16f, markerFont)
         }
-        drawMarker(startMarker)
-        drawMarker(destMarker)
+        startMarker?.let { drawMarker(it) }
+        destMarker?.let  { drawMarker(it) }
     }
 }
 
-@Composable
+// ──────────────────────────────────────────────
+//  MapScreen
+// ──────────────────────────────────────────────
+@androidx.compose.runtime.Composable
 fun MapScreen(
     modifier: Modifier = Modifier,
     onMapTap: (lat: Double, lon: Double) -> Unit,
@@ -179,21 +151,18 @@ fun MapScreen(
     dest: Position?,
     route: List<Position>,
     currentPosition: Position?,
+    setMode: Boolean = false,
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
-
-    // Real raster tiles read from assets/tehran.mbtiles, copied to internal
-    // storage on first use (see MbtilesTileProvider.copyMbtilesToInternal).
-    // This replaces the vector-only BlankTileProvider approach entirely —
-    // the background you see is now the actual pre-rendered mbtiles PNGs,
-    // not custom-drawn roads/buildings.
     val tileProvider = remember { MbtilesTileProvider.create(context) }
-
     val mapViewRef = remember { mutableStateOf<MapView?>(null) }
     val routeMarkersRef = remember { mutableStateOf<RouteMarkersOverlay?>(null) }
     val currentPositionRef = remember { mutableStateOf<CurrentPositionOverlay?>(null) }
 
+    // Map fills the entire surface.  System bars are hidden by
+    // MainActivity's WindowFlags.  The HUD overlay drawn by MainActivity
+    // handles its own insets/padding — the map gets the full bleed.
     AndroidView(
         modifier = modifier.fillMaxSize(),
         factory = { ctx ->
@@ -215,13 +184,8 @@ fun MapScreen(
                 overlays.add(MapEventsOverlay(tapReceiver))
                 overlays.add(CompassOverlay(ctx, this))
 
-                val posOverlay = CurrentPositionOverlay(this)
-                currentPositionRef.value = posOverlay
-                overlays.add(posOverlay)
-
-                val routeOverlay = RouteMarkersOverlay(this)
-                routeMarkersRef.value = routeOverlay
-                overlays.add(routeOverlay)
+                overlays.add(CurrentPositionOverlay(this).also { currentPositionRef.value = it })
+                overlays.add(RouteMarkersOverlay(this).also { routeMarkersRef.value = it })
 
                 mapViewRef.value = this
             }
@@ -229,16 +193,17 @@ fun MapScreen(
         update = { mapView ->
             routeMarkersRef.value?.update(start, dest, route)
             currentPositionRef.value?.let { overlay ->
-                val pos = currentPosition
-                if (pos != null) {
+                currentPosition?.let { pos ->
                     overlay.update(pos.latitude, pos.longitude, pos.bearing)
                     try {
                         mapView.controller.animateTo(GeoPoint(pos.latitude, pos.longitude))
                     } catch (_: Exception) {}
-                } else {
-                    overlay.clear()
-                }
+                } ?: overlay.clear()
             }
+            // Problem 5: when placing start/dest, lock pan + zoom.
+            mapView.controller.isZoomInEnabled = !setMode
+            mapView.controller.isZoomOutEnabled = !setMode
+            mapView.controller.isScrollByMapPixelsEnabled = !setMode
         }
     )
 

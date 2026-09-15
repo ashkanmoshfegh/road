@@ -119,16 +119,16 @@ class MainViewModel @Inject constructor(
         when {
             startNodeId == null && destNodeId == null -> {
                 startNodeId = node.id
-                _startPosition.value = Position(lat, lon)
+                _startPosition.value = Position(node.lat, node.lon)
                 // This tap IS "where I am" — there's no GPS, so it becomes
                 // the fixed origin for sensor-based dead reckoning.
-                resilienceManager.setInitialPosition(lat, lon)
+                resilienceManager.setInitialPosition(node.lat, node.lon)
                 _instruction.value = "Tap map: set DESTINATION"
                 Log.d("MainViewModel", "Start set: node=${node.id}")
             }
             startNodeId != null && destNodeId == null -> {
                 destNodeId = node.id
-                _destPosition.value = Position(lat, lon)
+                _destPosition.value = Position(node.lat, node.lon)
                 _instruction.value = "Route shown. Tap map or Reset to start over"
                 Log.d("MainViewModel", "Dest set: node=${node.id}")
             }
@@ -136,10 +136,10 @@ class MainViewModel @Inject constructor(
                 // Reset and place new start
                 startNodeId = node.id
                 destNodeId = null
-                _startPosition.value = Position(lat, lon)
+                _startPosition.value = Position(node.lat, node.lon)
                 _destPosition.value = null
                 _route.value = emptyList()
-                resilienceManager.setInitialPosition(lat, lon)
+                resilienceManager.setInitialPosition(node.lat, node.lon)
                 _instruction.value = "Tap map: set DESTINATION"
                 Log.d("MainViewModel", "Reset + new start: node=${node.id}")
             }

@@ -81,9 +81,15 @@ class GraphRepository @Inject constructor(
     fun getGraph(): GraphHopper? = graphHopper
 
     /**
-     * Find the nearest graph node to the given lat/lon.
+     * Find the nearest graph node/edge to the given lat/lon and return the
+     * actual road-snapped position.
+     *
      * Uses LocationIndex.findClosest which is O(log n) via quadtree.
-     * Returns a NodeInfo with the node ID and snapped latitude/longitude.
+     * Returns a NodeInfo carrying the SNAPPED coordinates — the point on the
+     * road network — NOT the raw tap point. Returning the raw tap is what
+     * used to make start/destination look off-road. GHPoint3D's lat/lon come
+     * from getSnappedPoint() only after calcSnappedPoint() runs; findClosest
+     * does that internally, so snappedPoint is populated here.
      */
     fun findNearest(graph: GraphHopper, lat: Double, lon: Double): NodeInfo? {
         val locIndex = graph.locationIndex
@@ -102,7 +108,13 @@ class GraphRepository @Inject constructor(
                 Log.w(logTag, "No valid snap found near ($lat, $lon)")
                 return null
             }
-            NodeInfo(snap.closestNode.toLong(), lat, lon)
+            // snappedPoint is the closest point lying ON the road network —
+            // exactly what we want to pin the marker and route origin to.
+            val sp = snap.snappedPoint
+            val snappedLat = if (sp != null) sp.lat else lat
+            val snappedLon = if (sp != null) sp.lon else lon
+            Log.d(logTag, "Snapped ($lat, $lon) -> node=${snap.closestNode} at ($snappedLat, $snappedLon)")
+            NodeInfo(snap.closestNode.toLong(), snappedLat, snappedLon)
         } catch (e: Exception) {
             Log.e(logTag, "findNearest failed", e)
             null
