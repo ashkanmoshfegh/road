@@ -80,20 +80,6 @@ class GraphRepository @Inject constructor(
 
     fun getGraph(): GraphHopper? = graphHopper
 
-    /**
-     * Find the nearest road to the given lat/lon and return the actual
-     * point ON THE ROAD closest to it — not the tapped coordinates
-     * themselves, and not just the nearest graph node (which can sit far
-     * along the street from where the user tapped).
-     *
-     * Previously this returned NodeInfo(snap.closestNode, lat, lon) —
-     * note lat/lon there were the ORIGINAL query coordinates, echoed back
-     * unchanged. That meant "snapping" never actually happened visually:
-     * the start/destination marker always sat exactly where you tapped,
-     * even if that was in the middle of a building block. Snap.snappedPoint
-     * is GraphHopper's own computed closest point on the matched edge's
-     * geometry, which is what should be shown/used instead.
-     */
     fun findNearest(graph: GraphHopper, lat: Double, lon: Double): NodeInfo? {
         val locIndex = graph.locationIndex
         if (locIndex == null) {
@@ -107,7 +93,7 @@ class GraphRepository @Inject constructor(
                 Log.w(logTag, "No valid snap found near ($lat, $lon)")
                 return null
             }
-            val snapped = snap.snappedPoint // GHPoint3D — the true nearest point on the road
+            val snapped = snap.snappedPoint
             NodeInfo(snap.closestNode.toLong(), snapped.lat, snapped.lon)
         } catch (e: Exception) {
             Log.e(logTag, "findNearest failed", e)
