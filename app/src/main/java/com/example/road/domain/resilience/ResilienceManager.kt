@@ -79,18 +79,7 @@ class ResilienceManager @Inject constructor(
             } else {
                 Log.d("ResilienceManager", "GraphHopper loaded successfully")
                 routeCalculator = RouteCalculator(graphRepository)
-                CoroutineScope(Dispatchers.IO).launch {
-                    try {
-                        val (nodes, edges) = GraphLoader.loadGraph(context, "graph.json")
-                        val matcher = MapMatcher(edges, nodes)
-                        withContext(Dispatchers.Main) {
-                            mapMatcher = matcher
-                            Log.d("ResilienceManager", "MapMatcher initialized with ${nodes.size} nodes, ${edges.size} edges")
-                        }
-                    } catch (e: Exception) {
-                        Log.e("ResilienceManager", "Failed to load graph.json for MapMatcher", e)
-                    }
-                }
+                // Skip GraphLoader (116MB JSON causes OOM); use GraphRepository.findNearest directly
                 true
             }
         } catch (e: Exception) {
@@ -175,7 +164,14 @@ class ResilienceManager @Inject constructor(
         val shouldMatch = currentTime - lastMatchTime >= minMatchIntervalMs
         val finalPos = if (shouldMatch) {
             lastMatchTime = currentTime
-            mapMatcher?.match(rawPos) ?: rawPos
+            // Match to nearest road via GraphHopper instead of loading JSON
+            val graph = graphRepository.getGraph()
+            val snapped = if (graph != null) {
+                val nearest = graphRepository.findNearest(graph, rawPos.latitude, rawPos.longitude)
+                if (nearest != null) Position(nearest.lat, nearest.lon, rawPos.bearing, rawPos.accuracy, rawPos.timestamp)
+                else rawPos
+            } else rawPos
+            snapped
         } else {
             rawPos
         }

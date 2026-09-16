@@ -28,6 +28,7 @@ class RouteCalculator @Inject constructor(
                 .addPoint(GHPoint(from.latitude, from.longitude))
                 .addPoint(GHPoint(to.latitude, to.longitude))
                 .setProfile("car")
+                .setAlgorithm("dijkstra")
             Log.d(logTag, "Submitting GHRequest...")
             val response = graphHopper.route(request)
             val path = response.best

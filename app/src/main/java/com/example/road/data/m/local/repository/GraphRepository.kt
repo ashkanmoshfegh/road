@@ -14,7 +14,7 @@ class GraphRepository @Inject constructor(
     @ApplicationContext private val context: Context
 ) {
     companion object {
-        private const val OSM_FILE_NAME = "iran-260828.osm.pbf"
+        private const val OSM_FILE_NAME = "tehran-extract.osm.pbf"
     }
 
     private val logTag = "GraphRepository"

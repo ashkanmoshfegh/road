@@ -212,8 +212,21 @@ class MainViewModel @Inject constructor(
         val startPos = _startPosition.value ?: return
         val destPos  = _destPosition.value ?: return
 
+        // Snap both positions to nearest graph nodes (road points) then route between them
+        val startSnap = graphRepository.findNearest(graph, startPos.latitude, startPos.longitude)
+        val destSnap = graphRepository.findNearest(graph, destPos.latitude, destPos.longitude)
+        if (startSnap == null || destSnap == null) {
+            _routeError.value = "Could not snap start/destination to nearest road"
+            return
+        }
+        Log.d("MainViewModel", "Snapped start to node ${startSnap.id} (${startSnap.lat}, ${startSnap.lon})")
+        Log.d("MainViewModel", "Snapped dest to node ${destSnap.id} (${destSnap.lat}, ${destSnap.lon})")
+
+        val snappedStart = Position(startSnap.lat, startSnap.lon)
+        val snappedDest = Position(destSnap.lat, destSnap.lon)
+
         val ghPoints = try {
-            routeCalculator.calculateRoute(startPos, destPos)
+            routeCalculator.calculateRoute(snappedStart, snappedDest)
         } catch (e: Exception) {
             Log.e("MainViewModel", "Route calc failed", e)
             _routeError.value = "Route calculation failed: ${e.message}"
